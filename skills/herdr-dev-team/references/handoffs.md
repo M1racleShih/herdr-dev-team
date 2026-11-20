@@ -13,16 +13,50 @@ RUN=$(mktemp -d "$RUN_ROOT/run-XXXXXXXX")
 NAME=$(basename "$RUN" | LC_ALL=C tr '[:upper:]' '[:lower:]')
 ```
 
-After confirmation, prepare one interactive Pi terminal for each role and keep it throughout the run. The Reviewer receives its first assignment only after the Coder delivers. `--outlive-parent` lets surviving workers report even if the original Leader session closes. Use a unique name for each terminal and save its returned `address`. These names also let you identify a terminal if its launch response is lost. Check readiness during setup. See [role setup](roles.md) for executable lookup and Ponytail discovery.
+## Launch the workers
+
+Run these commands from the actual Leader terminal. Use the confirmed role settings and the Ponytail path from [role setup](roles.md). These functions start one interactive Pi terminal per call and attach it to the Leader for Core notifications.
 
 ```sh
-hc run --bg --json --outlive-parent --name "$NAME-code" --cwd "$PROJECT" pi \
-  --provider "$PROVIDER" --model gpt-6.2-sol --thinking medium --skill "$PONYTAIL"
-hc run --bg --json --outlive-parent --name "$NAME-review" --cwd "$PROJECT" pi \
-  --provider "$PROVIDER" --model gpt-6.2-sol --thinking high
+launch_coder() {
+  hc run --bg --json --outlive-parent --parent "${HC_TERMINAL_ID:?Run from the Leader terminal}" \
+    --name "$NAME-code" --cwd "$PROJECT" "$@" pi \
+    --provider "$PROVIDER" --model gpt-6.2-sol --thinking medium --skill "$PONYTAIL"
+}
+launch_reviewer() {
+  hc run --bg --json --outlive-parent --parent "${HC_TERMINAL_ID:?Run from the Leader terminal}" \
+    --name "$NAME-review" --cwd "$PROJECT" "$@" pi \
+    --provider "$PROVIDER" --model gpt-6.2-sol --thinking high
+}
 ```
 
-Use the provider and role settings confirmed for this run. Set `CODER_ID` and `REVIEWER_ID` to the respective returned addresses. Write the task, permissions, confirmed settings and acceptance criteria in `$RUN/config.md`. Write the Coder's owned files, checks, Ponytail full requirement and boundaries in `$RUN/code-1.md`. Run this from the actual Leader terminal:
+Use only the confirmed launch mode. Save each command's returned `address` as `CODER_ID` or `REVIEWER_ID`. If a launch response is lost, look up the original worker by its unique name before taking any further action.
+
+### Visible in Herdr App
+
+1. Run `herdr-app ls`. In `spaces[].tabs[].terminals[]`, find the entry whose `terminal` equals the Leader's `HC_TERMINAL_ID`. Set `SPACE_ID` to its enclosing space ID. If the App is unavailable or the Leader cannot be located, ask the user whether to open the Leader in the App or use Background.
+2. Start the Coder in a new tab in that space.
+
+   ```sh
+   launch_coder --label "herdr.space=$SPACE_ID"
+   ```
+
+3. In `herdr-app ls`, find the tab in that space containing `CODER_ID` as a terminal. Set `DEV_TAB` to that tab's ID. If projection is delayed, inspect the layout again before proceeding. Rename that tab and launch the Reviewer into it.
+
+   ```sh
+   herdr-app do tab.rename --id "$DEV_TAB" --name Development
+   launch_reviewer --label "herdr.space=$SPACE_ID" --label "herdr.tab=$DEV_TAB"
+   ```
+
+4. Verify the two terminal IDs occupy distinct panes in `Development`, Coder on the left and Reviewer on the right. The Leader keeps its original tab and focus. The launch labels create both panes. Reuse them for handoffs and fixes. To inspect a long diff, the operator can run `herdr-app do pane.zoom --pane PANE_ID` to zoom and run it again to restore the split.
+
+### Background in Core
+
+Run `launch_coder` and `launch_reviewer` with no labels. Both workers receive messages by Core terminal ID. This mode needs only Core.
+
+## Dispatch the first assignment
+
+Check worker readiness during setup. The Reviewer receives its first assignment after the Coder delivers. In `$RUN/config.md`, record the task, permissions, confirmed role settings, layout, both worker terminal IDs and acceptance criteria. Write the Coder's owned files, checks, Ponytail full requirement and boundaries in `$RUN/code-1.md`. Initialize the helper with the saved Core terminal IDs.
 
 ```sh
 python3 "$HELPER" "$RUN" init --confirm --project "$PROJECT" --config "$RUN/config.md" \

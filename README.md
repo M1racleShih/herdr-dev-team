@@ -10,14 +10,16 @@ Load `herdr-dev-team` in the Leader's agent and ask it to use Herdr for a concre
 
 The Leader offers the role configuration once. The defaults are Pi with `gpt-6.2-sol` at medium thinking for coding, the same model at high thinking for review, and up to five review rounds. The Coder uses Ponytail full. The Leader reports final QA as PASS or FAIL.
 
-Run the Leader inside a live Herdr terminal that accepts incoming messages. The participants need a shared local run directory, Python 3.8 or later on a POSIX host, and access to `hc`. Pi and the selected models must be available to the workers. The release was exercised with Herdr Core 0.1.21 on Linux. Herdr App is optional for visible tabs and human intervention.
+Choose the layout in the same confirmation. In **Visible** mode, the Leader keeps its tab and focus. A separate `Development` tab shows the Coder on the left and the Reviewer on the right. In **Background** mode, both workers run through Core and send receipts to the Leader.
 
-## Install 0.1.0
+Run the Leader inside a live Herdr terminal that accepts incoming messages. The participants need a shared local run directory, Python 3.8 or later on a POSIX host, and access to `hc`. Pi and the selected models must be available to the workers. The visible layout was exercised with Herdr Core 0.1.21 and Herdr App 0.1.16 on Linux.
 
-The installable skill is [skills/herdr-dev-team](skills/herdr-dev-team/SKILL.md). Place that directory or a symlink to it in the skill discovery path of the Leader's host. For an existing dskills-managed project:
+## Install 0.1.1
+
+The installable skill is [skills/herdr-dev-team](skills/herdr-dev-team/SKILL.md). Place that directory or a symlink in the project's skill discovery path. For a first import, add the skill to the dskills pool and activate it in the current project.
 
 ```sh
-dskills install https://github.com/M1racleShih/herdr-dev-team.git --ref v0.1.0 --skill skills/herdr-dev-team
+dskills install https://github.com/M1racleShih/herdr-dev-team.git --ref v0.1.1 --skill skills/herdr-dev-team
 dskills plug --project . herdr-dev-team
 ```
 

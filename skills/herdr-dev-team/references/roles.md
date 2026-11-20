@@ -6,7 +6,7 @@ Get the Leader's actual core terminal address from its environment and put that 
 
 Run `hc --skill` for the installed version and use the confirmed provider, model and thinking level. If Core reports that it cannot find Pi, check the executable in the Leader's shell and in the Core environment. For a Node-managed Pi installation, pass the resolved absolute paths of both Node and the Pi entry point to Core. A launch error saying that the program could not start allows a corrected launch; an ambiguous timeout requires checking the original terminal first.
 
-Keep each role in a separate interactive terminal. When the user asks for visible tabs, consult `herdr-app --skill` to show the intended terminals in the requested space. The run still uses their Core terminal addresses for delivery.
+Keep each role in a separate interactive terminal. Follow the [worker launch instructions](handoffs.md#launch-the-workers) for the confirmed layout. Use the same two Core terminal addresses throughout review and repairs.
 
 ## Select Ponytail
 

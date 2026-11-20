@@ -2,7 +2,7 @@
 name: herdr-dev-team
 description: Lead a Herdr development team when a user requests delegated coding, independent review and final acceptance through herdr-core or herdr-app.
 metadata:
-  version: "0.1.0"
+  version: "0.1.1"
 ---
 
 # Lead a Herdr development team
@@ -20,6 +20,8 @@ Present the following defaults together once per development task. Use the host'
 | Coder | Interactive Pi, `gpt-6.2-sol`, medium thinking, Ponytail full | Code, related tests and technical details needed by callers |
 | Reviewer | Separate interactive Pi, `gpt-6.2-sol`, high thinking | Read-only, independent review of this change and its realistic effects |
 | Leader | Current session | Scope, dispatch, review decisions, final PASS or FAIL and report |
+
+Include the layout in the same confirmation. When the Leader is in Herdr App, suggest **Visible** and offer **Background** as an option. Visible keeps the Leader in its own tab and places Coder on the left and Reviewer on the right of a separate `Development` tab. For Core-only runs, suggest Background.
 
 The default budget is five review rounds, including the first review. Keep new or changed code files within 800 lines by splitting along an existing responsibility when needed. Use the project's normal checks and file conventions.
 
