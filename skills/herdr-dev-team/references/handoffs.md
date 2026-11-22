@@ -1,6 +1,6 @@
 # Dispatch and recover a local run
 
-Use Python 3 on a POSIX host. All three interactive sessions share the same local Herdr Core and filesystem. The helper uses `hc send --json` with a literal terminal ID and returns after the delivery attempt. Legacy runs keep a private state file. Two-pack runs share a project SQLite database. Herdr messages wake the receiving agent.
+Use Python 3 on a POSIX host. All three interactive sessions share the same local Herdr Core and filesystem. The helper uses `hc send --json` with a literal terminal ID and returns after the delivery attempt. Legacy runs keep a private state file. Two-pack and four-pack runs share a project SQLite database. Herdr messages wake the receiving agent. For the workflow with human-approved executable examples, see [Operate a four-pack](four-pack.md).
 
 ## Run a two-pack
 
