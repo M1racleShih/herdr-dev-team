@@ -291,6 +291,51 @@ def dispatch_summary(db, item):
             "receipt_saved": receipt is not None}, int(delivery["status"] in ("intent", "ambiguous"))
 
 
+def resume_summary(view):
+    phase, current, items = view["phase"], view["current"], view["assignments"]
+    if phase == "ready":
+        return "等待向 Coder 派工。"
+    if phase == "completed":
+        item = items[next(reversed(items))]
+        receipt, decision = item.get("receipt", {}), item.get("decision", {})
+        # Report acceptance already checked the commit and snapshotted the required evidence.
+        if (item["role"] == "cleaner" and receipt.get("status") == "pass"
+                and decision.get("phase") == "completed" and decision.get("receipt") == receipt["id"]):
+            commit = receipt["result"]["commit"]
+            return f"第 {item['round']} 轮，提交 {commit[:7]}：two-pack 已完成。"
+        return "完成记录待核实。"
+
+    item = items[current]
+    role, number = item["role"].capitalize(), item["round"]
+    prefix = f"第 {number} 轮，"
+    if phase == "paused":
+        return f"{prefix}{role} 已暂停。"
+    if phase == "blocked":
+        return f"{prefix}{role} 遇阻。"
+    if phase == "rework-exhausted":
+        return f"{prefix}Cleaner 验收未通过，返工轮次已用尽。"
+
+    delivery = item["delivery"]["status"]
+    if role == "Cleaner":
+        coder = items[assignment_key("coder", number)]
+        commit = coder["receipt"]["result"]["commit"]
+        prefix += f"Coder 已交付 {commit[:7]}："
+        if delivery == "delivered-by-inspection":
+            return f"第 {number} 轮，提交 {commit[:7]}：two-pack 已完成。"
+        if delivery == "delivered":
+            return f"{prefix}已向 Cleaner 派工，尚无 Cleaner 完成回执。"
+    else:
+        previous = items.get(assignment_key("cleaner", number - 1), {})
+        if (previous.get("receipt", {}).get("status") == "fail"
+                and previous.get("decision", {}).get("next") == current):
+            prefix += "Cleaner 验收未通过，"
+        if delivery in ("delivered", "delivered-by-inspection"):
+            return f"{prefix}已向 Coder 派工，尚无 Coder 完成回执。"
+    if delivery == "pending":
+        return f"{prefix}等待向 {role} 派工。"
+    return f"{prefix}给 {role} 的派工送达待核实。"
+
+
 def resume(db, run):
     view = {key: run[key] for key in ("id", "project", "project_id", "branch", "baseline",
             "pack_version", "leader", "rounds", "phase", "current", "card_version", "created_at", "updated_at")}
@@ -318,6 +363,7 @@ def resume(db, run):
         if item["decision"]:
             entry["decision"] = json.loads(item["decision"])
         view["assignments"][assignment_key(item["role"], item["round"])] = entry
+    view["summary"] = resume_summary(view)
     return view, 0
 
 

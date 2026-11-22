@@ -280,6 +280,7 @@ class TwoPackTest(unittest.TestCase):
         first = self.init()["id"]
         original = self.assert_readonly_resume(first)
         self.assertEqual(original["phase"], "ready")
+        self.assertEqual(original["summary"], "等待向 Coder 派工。")
         self.assertEqual(original["project"], str(self.project))
         self.assertEqual(original["branch"], "delivery")
         self.assertEqual(original["baseline"], self.baseline)
@@ -310,6 +311,8 @@ class TwoPackTest(unittest.TestCase):
         cleaner = state["assignments"]["cleaner:1"]
         self.assertEqual(cleaner["input_commit"], coder_commit)
         self.assertEqual(cleaner["delivery"]["status"], "delivered")
+        self.assertEqual(state["summary"],
+                         f"第 1 轮，Coder 已交付 {coder_commit[:7]}：已向 Cleaner 派工，尚无 Cleaner 完成回执。")
         self.assertIn(cleaner["id"], self.worker_sends()[-1][1])
         self.assertIn(coder_commit, self.worker_sends()[-1][1])
         sends = self.sends()
@@ -328,6 +331,7 @@ class TwoPackTest(unittest.TestCase):
         complete = self.assert_readonly_resume(run)
         self.assertEqual(complete["phase"], "completed")
         self.assertEqual(complete["assignments"]["cleaner:1"]["receipt"]["result"]["commit"], cleaner_commit)
+        self.assertEqual(complete["summary"], f"第 1 轮，提交 {cleaner_commit[:7]}：two-pack 已完成。")
         sends = self.sends()
         duplicate = self.report(run, "cleaner", 1, "pass", cleaner_result)
         self.assertTrue(duplicate["duplicate"])
@@ -375,6 +379,8 @@ class TwoPackTest(unittest.TestCase):
         self.assertIn("receipt", before["assignments"]["coder:1"])
         pending = before["assignments"]["cleaner:1"]
         self.assertEqual(pending["delivery"]["status"], "pending")
+        self.assertEqual(before["summary"],
+                         f"第 1 轮，Coder 已交付 {self.baseline[:7]}：等待向 Cleaner 派工。")
         self.assertEqual(self.attempt_count(pending), 0)
         self.assert_worker_targets(CODER)
 
@@ -394,6 +400,8 @@ class TwoPackTest(unittest.TestCase):
         before = self.assert_readonly_resume(run)
         intent = before["assignments"]["cleaner:1"]
         self.assertEqual(intent["delivery"]["status"], "intent")
+        self.assertEqual(before["summary"],
+                         f"第 1 轮，Coder 已交付 {self.baseline[:7]}：给 Cleaner 的派工送达待核实。")
         self.assertEqual(self.attempt_count(intent), 1)
         self.assert_worker_targets(CODER, CLEANER)
 
@@ -401,6 +409,7 @@ class TwoPackTest(unittest.TestCase):
         self.cli(run, "recover", exit_code=1)
         after = self.assert_readonly_resume(run)
         self.assertEqual(after["assignments"]["cleaner:1"]["delivery"]["status"], "ambiguous")
+        self.assertEqual(after["summary"], before["summary"])
         self.assert_worker_targets(CODER, CLEANER)
         self.report(run, "cleaner", 1, "pass", self.result("cleaner", "pass"))
         complete = self.assert_readonly_resume(run)
@@ -497,6 +506,7 @@ class TwoPackTest(unittest.TestCase):
         paused = self.assert_readonly_resume(run)
         self.assertEqual(paused["phase"], "paused")
         self.assertEqual(paused["current"], "coder:1")
+        self.assertEqual(paused["summary"], "第 1 轮，Coder 已暂停。")
         self.assertEqual(self.assignment_count(run, "cleaner"), 0)
         receipt = paused["assignments"]["coder:1"]["receipt"]
         self.assertIn("clarification", receipt["result"]["failure"]["reason"])
@@ -512,6 +522,7 @@ class TwoPackTest(unittest.TestCase):
         self.report(run, "cleaner", 1, "fail", failure)
         after_failure = self.assert_readonly_resume(run)
         self.assertEqual(after_failure["current"], "coder:2")
+        self.assertEqual(after_failure["summary"], "第 2 轮，Cleaner 验收未通过，已向 Coder 派工，尚无 Coder 完成回执。")
         self.assertEqual(after_failure["assignments"]["coder:2"]["input_commit"], failed_commit)
         self.assertIn("Misreported progress", self.worker_sends()[-1][1])
 
@@ -522,6 +533,7 @@ class TwoPackTest(unittest.TestCase):
         self.assertEqual(complete["phase"], "completed")
         failed = complete["assignments"]["cleaner:1"]["receipt"]
         passed = complete["assignments"]["cleaner:2"]["receipt"]
+        self.assertEqual(complete["summary"], f"第 2 轮，提交 {fixed_commit[:7]}：two-pack 已完成。")
         self.assertEqual((failed["status"], failed["result"]["commit"]), ("fail", failed_commit))
         self.assertEqual((passed["status"], passed["result"]["commit"]), ("pass", fixed_commit))
         for receipt, expected in ((failed, "... FAIL"), (passed, "... ok")):
