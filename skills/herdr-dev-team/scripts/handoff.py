@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -349,6 +350,8 @@ def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("run_dir", type=Path, help="private shared local run directory")
     commands = cli.add_subparsers(dest="command", required=True)
+    two = commands.add_parser("two", add_help=False, help="manage a SQLite two-pack run")
+    two.add_argument("arguments", nargs=argparse.REMAINDER, metavar="init | RUN_ID COMMAND")
     init = commands.add_parser("init", help="record the user-confirmed settings and terminal IDs")
     init.add_argument("--confirm", action="store_true", help="affirm that the user confirmed the settings")
     init.add_argument("--config", required=True, type=Path, help="UTF-8 file with task and effective settings")
@@ -383,6 +386,19 @@ def parser():
 
 
 def main():
+    # Let the pack parser own help and options below its namespace.
+    if len(sys.argv) >= 3 and sys.argv[2] == "two":
+        from pack_evidence import validate
+        import two_pack
+
+        try:
+            result, code = two_pack.main(Path(sys.argv[1]), sys.argv[3:], identity=identity,
+                                         send=send, validate=validate)
+        except (HandoffError, OSError, ValueError, sqlite3.Error) as exc:
+            print(f"handoff: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return code
     args = parser().parse_args()
     run = Run(args.run_dir)
     try:
