@@ -93,7 +93,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 '''
 
 
-class TwoPackTest(unittest.TestCase):
+class TwoPackFixture(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="two-pack test ")
         self.addCleanup(scratch.cleanup)
@@ -276,6 +276,8 @@ class TwoPackTest(unittest.TestCase):
                         first.kill()
                         first.communicate(timeout=10)
 
+
+class TwoPackTest(TwoPackFixture):
     def test_project_db_preserves_multiple_runs_and_their_original_cards(self):
         first = self.init()["id"]
         original = self.assert_readonly_resume(first)
