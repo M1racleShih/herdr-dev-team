@@ -302,7 +302,7 @@ def resume_summary(view):
         if (item["role"] == "cleaner" and receipt.get("status") == "pass"
                 and decision.get("phase") == "completed" and decision.get("receipt") == receipt["id"]):
             commit = receipt["result"]["commit"]
-            return f"第 {item['round']} 轮，提交 {commit[:7]}：two-pack 已完成。"
+            return f"第 {item['round']} 轮，Cleaner 已在 {commit[:7]} 验收通过，two-pack 已完成。"
         return "完成记录待核实。"
 
     item = items[current]
@@ -320,9 +320,7 @@ def resume_summary(view):
         coder = items[assignment_key("coder", number)]
         commit = coder["receipt"]["result"]["commit"]
         prefix += f"Coder 已交付 {commit[:7]}："
-        if delivery == "delivered-by-inspection":
-            return f"第 {number} 轮，提交 {commit[:7]}：two-pack 已完成。"
-        if delivery == "delivered":
+        if delivery in ("delivered", "delivered-by-inspection"):
             return f"{prefix}已向 Cleaner 派工，尚无 Cleaner 完成回执。"
     else:
         previous = items.get(assignment_key("cleaner", number - 1), {})
