@@ -41,7 +41,9 @@ class Target(unittest.TestCase):
     def test_approved_examples(self):
         cases = json.loads(Path("behavior/examples.json").read_text())
         for case in cases:
-            self.assertEqual(increment(case["input"]), case["expected"], "approved increment example")
+            value = case["input"]
+            actual = [increment(n) for n in value] if isinstance(value, list) else increment(value)
+            self.assertEqual(actual, case["expected"], "approved increment example")
 
     def test_addition_property(self):
         for n in range(-5, 6):
@@ -78,9 +80,13 @@ class FourPackTest(unittest.TestCase):
         self.baseline = self.commit("Baseline")
         self.card = self.root / "card.md"
         self.card.write_text("# Increment\nAll examples are executable.\n")
+        self.pin_checks(CHECKS)
+
+    def pin_checks(self, checks):
+        self.pinned = checks
         self.checks = self.json_file("checks.json", {
-            role: [dict(name=name, command=command, exit_code=code) for name, command, code in checks]
-            for role, checks in CHECKS.items()})
+            role: [dict(name=name, command=command, exit_code=code) for name, command, code in rows]
+            for role, rows in checks.items()})
 
     def git(self, *args, cwd=None):
         return subprocess.run(["git", *args], cwd=cwd or self.project, env=self.env, check=True,
@@ -154,7 +160,7 @@ class FourPackTest(unittest.TestCase):
     def checks_for(self, role, source, spec, *, issue=None):
         commit = self.head()
         rows = []
-        for name, command, expected in CHECKS[role]:
+        for name, command, expected in self.pinned[role]:
             if name in ("mutation", "example-mutation") or (issue and name != issue):
                 continue
             rows.append(self.check(self.project, role, name, command, commit, 1 if issue == name else expected))
@@ -173,7 +179,7 @@ class FourPackTest(unittest.TestCase):
         log.write_text(output)
         return dict(name=name, command=command, commit=commit, exit_code=process.returncode, log=log.name)
 
-    def mutation(self, name, path, old, new, *, label=None):
+    def mutation(self, name, path, old, new, *, label=None, assertion="approved increment example"):
         commit = self.head()
         clone = self.root / (label or name)
         self.git("clone", "--quiet", str(self.project), str(clone), cwd=self.root)
@@ -186,8 +192,7 @@ class FourPackTest(unittest.TestCase):
         patch.write_text(self.git("diff", cwd=clone))
         command = UNIT if name == "mutation" else ACCEPTANCE
         row = self.check(clone, label or "architect", name, command, commit, 1)
-        return dict(row, patch=patch.name, test="test_target.Target.test_approved_examples",
-                    assertion="approved increment example")
+        return dict(row, patch=patch.name, test="test_target.Target.test_approved_examples", assertion=assertion)
 
     def implement(self):
         (self.project / "target.py").write_text("def increment(number):\n    return number + 1\n")
@@ -270,6 +275,9 @@ class FourPackTest(unittest.TestCase):
         rejection = self.report(run, "architect", 1, "pass", report, code=1)
         self.assertIn("failed with the declared assertion", rejection["rejection"])
         report["checks"][-1] = examples
+        missing_dependency = dict(report, checks=[row for row in report["checks"] if row["name"] != "dependencies"])
+        rejection = self.report(run, "architect", 1, "pass", missing_dependency, code=1)
+        self.assertIn("missing required check dependencies", rejection["rejection"])
         self.report(run, "architect", 1, "pass", report)
         view = self.resume(run)
         self.assertEqual(view["phase"], "completed")
@@ -288,6 +296,36 @@ class FourPackTest(unittest.TestCase):
         self.approve(run, spec)
         self.assertEqual(self.resume(run), view)
         self.assertEqual(self.worker_sends(), before)
+
+    def test_multiline_expected_value_and_architecture_without_dependency_command(self):
+        self.pin_checks(dict(CHECKS, architect=[row for row in CHECKS["architect"] if row[0] != "dependencies"]))
+        run = self.init()["id"]
+        self.cli(run, "start")
+        path = self.project / EXAMPLES
+        path.parent.mkdir()
+        path.write_text(json.dumps([{"input": [1, 2], "expected": [2, 3]}], indent=2) + "\n")
+        self.commit("Specify a vector example")
+        self.specifier(run, self.baseline)
+        spec = self.resume(run)["specification"]
+        self.approve(run, spec)
+        commit = self.implement()
+        self.report(run, "coder", 1, "done", self.checks_for("coder", spec["commit"], spec))
+        self.report(run, "refactorer", 1, "done", self.checks_for("refactorer", commit, spec))
+        report = self.checks_for("architect", commit, spec)
+        report["checks"].extend((
+            self.mutation("mutation", "target.py", "number + 1", "number + 2",
+                          assertion="Lists differ: [3, 4] != [2, 3]"),
+            self.mutation("example-mutation", EXAMPLES, "      2,\n      3", "      8,\n      9",
+                          assertion="Lists differ: [2, 3] != [8, 9]"),
+        ))
+        rejection = self.report(run, "architect", 1, "pass", report, code=1)
+        self.assertIn("requires nonempty architecture", rejection["rejection"])
+        report["architecture"] = "Inspected target.py: no imports; behavior tests call its public function."
+        self.report(run, "architect", 1, "pass", report)
+        view = self.resume(run)
+        self.assertEqual(view["final_commit"], commit)
+        proof = view["assignments"]["architect:1"]["receipt"]["result"]["checks"][-1]
+        self.assertIn("AssertionError: Lists differ: [2, 3] != [8, 9]", (self.store / proof["log_snapshot"]).read_text())
 
     def yield_changed_examples(self, run, spec, **kwargs):
         payload = dict(input_commit=spec["commit"], commit=self.head(), issues="", checks=[],

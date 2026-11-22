@@ -19,7 +19,7 @@ FOUR_STATUSES = {
 FOUR_CHECKS = {
     "specifier": {}, "coder": {"unit": 0, "acceptance": 0},
     "refactorer": {"unit": 0, "acceptance": 0, "properties": 0},
-    "architect": {"unit": 0, "acceptance": 0, "dependencies": 0, "mutation": 1, "example-mutation": 1},
+    "architect": {"unit": 0, "acceptance": 0, "mutation": 1, "example-mutation": 1},
 }
 COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
@@ -53,6 +53,8 @@ def validate_checks(checks, *, pack="two"):
             if name in by_name:
                 raise ValueError(f"duplicate {role} check {name}")
             by_name[name] = check
+        if pack == "four" and role == "architect" and "dependencies" in by_name:
+            required = {**required, "dependencies": 0}
         for name, status in required.items():
             if name not in by_name or by_name[name]["exit_code"] != status:
                 raise ValueError(f"{role} requires check {name} with exit code {status}")
@@ -180,17 +182,25 @@ def replay_patch(project, commit, patch, *, example_path=None):
             git(project, "apply", "--cached", "--whitespace=nowarn", "-", env=env, data=patch)
             args = ("diff", "--cached", "--no-renames", "--no-ext-diff", "-z")
             changed = git(project, *args, "--name-only", commit, env=env).stdout
-            if example_path is not None:
-                lines = git(project, *args, "--numstat", commit, env=env).stdout
+            names = {os.fsdecode(name) for name in changed.split(b"\0") if name}
+            data = None
+            if example_path is not None and names == {example_path}:
                 modes = git(project, *args, "--summary", commit, env=env).stdout
+                if not modes:
+                    data = git(project, "cat-file", "blob", f":0:{example_path}", env=env).stdout
     except (OSError, ValueError) as exc:
         raise ValueError(f"mutation patch cannot be replayed against receipt commit: {exc}") from exc
-    if not changed:
+    if not names:
         raise ValueError("mutation patch must change the receipt commit")
-    names = {os.fsdecode(name) for name in changed.split(b"\0") if name}
-    if example_path is not None and (names != {example_path} or modes
-                                    or lines != b"1\t1\t" + os.fsencode(example_path) + b"\0"):
-        raise ValueError("example mutation must replace one line of only the approved specification file")
+    if example_path is not None:
+        if data is None:
+            raise ValueError("example mutation must edit only the approved specification file without changing its mode")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("example mutation must leave UTF-8 text") from exc
+        if any(not char.isprintable() and char not in "\n\r\t" for char in text):
+            raise ValueError("example mutation must leave UTF-8 text")
     return names
 
 
