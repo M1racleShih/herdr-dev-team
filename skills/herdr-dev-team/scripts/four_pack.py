@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 import re
 
-from pack_evidence import FOUR_STATUSES, git, validate_six_spec
+from pack_evidence import FOUR_STATUSES, git, validate_checks
 from pack_store import (
     accepted_receipt, assignment_id, check_dispatch_project, current_assignment, encode, get_attempt,
     insert_assignment, nonempty, now, project_baseline,
 )
+from six_evidence import qa_mismatch, qa_repair_checks, validate_six_spec
 from spec_artifact import checked_out_spec
 
 
@@ -153,16 +154,33 @@ def rework(db, run, *, specification=False):
         anchor, source = json.loads(receipt["payload"])["commit"], receipt["id"]
     head = head_at_or_after(run, anchor)
     check_dispatch_project(run, head)
+    if run["pack"] == "six" and role == "qa":
+        spec = latest_spec(db, run, current["round"])
+        previous = prior_qa_finding(db, run, spec, current["round"])
+        if (previous is None or previous["status"] != "repair") and head != hardener_commit(
+                db, run, spec, current["round"]):
+            role = "coder"
     return reopen(db, run, role, head, source)
 
 
-def prior_qa_failure(db, run, item, spec):
+def prior_qa_finding(db, run, spec, round_number):
+    # A pause leaves the prior finding active. A new approved version starts fresh.
     return db.execute(
-        "SELECT r.id, r.payload FROM receipts r JOIN assignments a ON a.id = r.assignment_id "
+        "SELECT r.id, r.status, r.payload, a.round FROM receipts r JOIN assignments a ON a.id = r.assignment_id "
         "WHERE a.run_id = ? AND a.role = 'qa' AND a.round >= ? AND a.round < ? "
-        "AND r.accepted = 1 AND r.status = 'fail' ORDER BY a.round DESC LIMIT 1",
-        (run["id"], spec["version"], item["round"]),
+        "AND r.accepted = 1 AND r.status IN ('fail', 'repair') ORDER BY a.round DESC LIMIT 1",
+        (run["id"], spec["version"], round_number),
     ).fetchone()
+
+
+def hardener_commit(db, run, spec, round_number):
+    row = db.execute(
+        "SELECT r.payload FROM receipts r JOIN assignments a ON a.id = r.assignment_id "
+        "WHERE a.run_id = ? AND a.role = 'hardener' AND a.round BETWEEN ? AND ? "
+        "AND r.accepted = 1 AND r.status = 'done' ORDER BY a.round DESC LIMIT 1",
+        (run["id"], spec["version"], round_number),
+    ).fetchone()
+    return json.loads(row["payload"])["commit"] if row else None
 
 
 def validate_receipt(db, store, run, item, status, payload, checks, validate):
@@ -178,15 +196,20 @@ def validate_receipt(db, store, run, item, status, payload, checks, validate):
                 or type(version.get("version")) is not int or version != spec_id(spec)):
             raise ValueError("receipt must name the assignment's approved specification version and SHA-256")
     evidence_options = {}
-    if pack == "six" and ((role == "coder" and status == "done")
-                          or (role == "qa" and status in ("pass", "fail"))):
-        previous = prior_qa_failure(db, run, item, spec)
+    if pack == "six" and ((role == "coder" and status == "done") or role == "qa"):
+        previous = prior_qa_finding(db, run, spec, item["round"])
         if previous is not None:
             prior_qa = json.loads(previous["payload"])
             if role == "qa":
                 evidence_options["qa_script_snapshot"] = prior_qa["qa"]["script_snapshot"]
-            elif payload.get("commit") == prior_qa["commit"]:
+                if previous["status"] == "repair":
+                    evidence_options["qa_repair_commit"] = prior_qa["commit"]
+            elif previous["status"] == "fail" and payload.get("commit") == prior_qa["commit"]:
                 raise ValueError("Coder must deliver a new commit to address the accepted QA failure")
+        # Stores from older helpers may already have an ordinary QA assignment at a changed HEAD.
+        if (role == "qa" and status in ("pass", "repair") and "qa_repair_commit" not in evidence_options
+                and item["input_commit"] != hardener_commit(db, run, spec, item["round"])):
+            raise ValueError("The assigned QA commit needs Hardener verification. Report paused for Coder rework.")
     validate(project, run["branch"], item["input_commit"], role, status, payload, store, checks,
              pack=pack, spec_path=path, **evidence_options)
     if role == "specifier" and status == "done":
@@ -215,6 +238,8 @@ def transition(db, run, item, status, receipt_id, artifact):
         phase, following = "active", (successors[role], number)
     elif status == "fail":
         phase, following = "active", ("coder", next_round(db, run))
+    elif status == "repair":
+        phase, following = "active", ("qa", next_round(db, run))
     elif status == "superseded":
         phase, following = "active", ("specifier", next_round(db, run))
     elif role == FINAL_ROLE[run["pack"]] and status == "pass":
@@ -256,7 +281,21 @@ def resume(db, run, view):
     return f"Round {item['round']}: {role} assignment {delivery}; no accepted receipt yet."
 
 
-def assignment_context(db, run, item):
+def qa_finding_context(spec, payload):
+    expected = validate_six_spec(spec["body"])["qa_steps"]
+    mismatch = qa_mismatch(expected, payload["qa"]["observations"])
+    checks = {check["name"]: check["log_snapshot"] for check in payload["checks"]}
+    log = checks["user-entry"]
+    context = f"QA evidence at {payload['commit']}. Harness {payload['qa']['script_snapshot']}, log {log}.\n"
+    if mismatch:
+        context += f"Observed QA mismatch\n{mismatch}\n"
+    failed_check = payload["failure"]["check"]
+    if failed_check != "user-entry":
+        context += f"Failed check {json.dumps(failed_check, ensure_ascii=True)}. Log {checks[failed_check]}.\n"
+    return context
+
+
+def assignment_context(db, run, item, checks):
     pack, role = run["pack"], item["role"]
     if role == "specifier":
         path = examples_path(db, run)
@@ -272,15 +311,39 @@ def assignment_context(db, run, item):
     context = (f"\nApproved {description} {spec['path']} at {spec['commit']}; "
                f"version {spec['version']}, SHA-256 {spec['sha256']}.\n"
                f"Read the durable specification body with {pack} RUN_ID resume.\n")
-    if pack == "six" and role in ("coder", "qa"):
-        previous = prior_qa_failure(db, run, item, spec)
-        if previous is not None:
-            failure = json.loads(previous["payload"])
-            if role == "qa":
-                context += f"Reuse the script bytes from QA snapshot {failure['qa']['script_snapshot']} in the private store.\n"
-            elif item["source_receipt"] != previous["id"]:
-                finding = json.dumps(failure["failure"], ensure_ascii=True, indent=2)
-                context += f"Previous QA finding at {failure['commit']}:\n{finding}\n"
+    if pack != "six" or role not in ("coder", "qa"):
+        return context
+    previous = prior_qa_finding(db, run, spec, item["round"])
+    failure = json.loads(previous["payload"]) if previous is not None else None
+    if role == "qa":
+        if failure is not None:
+            snapshot = failure["qa"]["script_snapshot"]
+            context += f"Reuse the script bytes from QA snapshot {snapshot} in the private store.\n"
+        if previous is None or previous["status"] != "repair":
+            return context + (
+                "Use the assigned commit for independent QA. Report repair for a scoped implementation defect "
+                "that QA can fix, fail to hand the defect to Coder, or paused for conflicting approved expectations.\n"
+            )
+        repair_checks = qa_repair_checks(validate_checks(checks, pack=pack))
+        if item["source_receipt"] != previous["id"]:
+            context += qa_finding_context(spec, failure)
+            context += f"QA repair diagnosis {json.dumps(failure['issues'], ensure_ascii=True)}\n"
+        return context + (
+            f"QA is assigned to repair the defect recorded at {failure['commit']}. Commit a scoped fix "
+            "under the same approval and rerun the frozen QA and local repair checks on clean repaired HEAD.\n"
+            f"Local QA repair checks:\n{encode(list(repair_checks.values()))}\n"
+            "Report pass with the changed commit, fail with evidence if the defect needs Coder, "
+            "or paused if the approved behavior needs human review.\n"
+        )
+    if previous is not None:
+        if previous["status"] == "fail":
+            earlier = prior_qa_finding(db, run, spec, previous["round"])
+            if earlier is not None and earlier["status"] == "repair":
+                context += qa_finding_context(spec, json.loads(earlier["payload"]))
+        context += qa_finding_context(spec, failure)
+        if item["source_receipt"] != previous["id"]:
+            finding = json.dumps(failure["failure"], ensure_ascii=True, indent=2)
+            context += f"Previous QA finding at {failure['commit']}\n{finding}\n"
     return context
 
 

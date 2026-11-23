@@ -15,7 +15,7 @@ Pin check commands in `CHECKS`, a UTF-8 JSON object keyed by the role names belo
 | `cleaner` | `unit`, `acceptance` |
 | `architect` | `unit`, `acceptance`, `properties`, with `dependencies` when a project check applies |
 | `hardener` | `unit`, `acceptance`, `mutation` |
-| `qa` | `user-entry` |
+| `qa` | `user-entry`. A QA-owned fix also uses the Coder's `unit` and `acceptance`, and the Architect's `properties` and any pinned `dependencies` on the repaired commit. |
 
 Pin exit code `0` for the baseline checks and `1` for `mutation`. Coder through Hardener use the same `acceptance` command. Hardener uses the identical verbose unittest command for `unit` and `mutation`, for example `python3 -B -m unittest -v test_target`. You can pin `test` and `assertion` together on `mutation`. Pin `user-entry` to the harness invocation, for example `python3 -B '/private/run/user-entry.py'`. The approved spec pins the public command that the harness launches.
 
@@ -85,7 +85,7 @@ The helper replays the patch against that commit in an isolated Git index. For a
 
 ### QA run and replay
 
-QA writes the harness at the private path named in the pinned command. It runs every approved user command in the clean candidate worktree, captures its actual output and exit code, and compares observations exactly. Use the assigned input commit as the checked commit. The harness records the exact SHA-256 of its source file and writes this JSON as the `user-entry` check log:
+QA writes the harness at the private path named in the pinned command. It runs every approved user command in the clean candidate worktree, captures its actual output and exit code, and compares observations exactly. For the first observation, use the assigned input commit as the checked commit. The harness records the exact SHA-256 of its source file and writes this JSON as the `user-entry` check log:
 
 ```json
 {
@@ -98,9 +98,19 @@ QA writes the harness at the private path named in the pinned command. It runs e
 }
 ```
 
-Use the harness exit code for the pinned `user-entry` check row. Include `qa: { "script": "<private script path>", "observations": […] }` in the receipt with the same observations as the log. An individual command exit code may be `0` while its stdout differs from the expected value, as in this example. The harness exits nonzero and QA reports `fail` with a `failure` object describing `check` (`user-entry`), `input`, `expected` and `actual`. On exact agreement, the harness exits `0` and QA reports `pass`. This is the receipt that completes the run and binds `final_commit` to the QA candidate.
+Use the harness exit code for the pinned `user-entry` check row. Include `qa: { "script": "<private script path>", "observations": […] }` with the same observations as the log. A command may exit `0` with incorrect stdout, as above. The harness then exits nonzero. On a mismatch record the original commit, harness, log, and a `failure` object with `check` (`user-entry`), `input`, `expected` and `actual`. Choose the route before editing the product:
 
-After `fail`, QA reuses the archived harness bytes on the repaired candidate under the same approval. From `resume`, retain the failed and accepted commits, their observations, `checks[].log_snapshot` and `qa.script_snapshot`. To replay, run the archived harness with the same interpreter and options from a clean disposable checkout at the recorded commit. The above pinned Python invocation becomes `python3 -B "$STORE/$SCRIPT_SNAPSHOT"`. Compare the replay to that candidate's archived log. The original script and log paths may have changed since acceptance; the snapshots preserve their bytes.
+| Finding | Report | What happens next |
+| --- | --- | --- |
+| QA reproduced and located a local defect under the approved behavior, such as a CLI printing its input after calculating the right answer | `repair` on the failed candidate with the diagnosis in `issues` | The helper archives the failure and assigns QA a new round. QA commits the fix and submits fresh repair checks and the original harness results on the new commit. |
+| The failure needs implementation work across modules, a design change or investigation by Coder | `fail` on the failing candidate | Coder receives the failed commit, expected and observed behavior, and the QA receipt. The normal downstream checks run again. |
+| The approved steps and examples have conflicting expectations | `paused` with `failure.reason` | The Lead brings the conflict to the user. A revised specification goes back through approval. |
+
+Both routes reuse the identical archived harness under the same approval. After a QA-owned fix, use the repair assignment's `input_commit` and the new checked commit as `commit`. On that commit run the frozen repair checks listed above, the public entry check, and any additional project checks affected by the change. Include the required check rows and logs. An accepted QA `pass` binds `final_commit` to the version that passed.
+
+If the attempted fix exposes a broader defect, QA can report `fail` from the repair assignment with the current clean candidate, the archived harness observations, and a failing pinned check. For example, the user command may now pass while the `properties` check fails. Name that check in `failure` and include its log. Coder takes over at the reported commit.
+
+From `resume`, retain the failed and accepted commits, their observations, `checks[].log_snapshot` and `qa.script_snapshot`. To replay, run the archived harness with the same interpreter and options from a clean disposable checkout at the recorded commit. The above pinned Python invocation becomes `python3 -B "$STORE/$SCRIPT_SNAPSHOT"`. Compare the replay to that candidate's archived log.
 
 ## Recover, revise or repair
 
@@ -108,6 +118,7 @@ Use the read-only `six RUN_ID resume` after interruption. `recover` claims an un
 
 - Cleaner, Architect, Hardener and QA can report `fail`. Attach a pinned check whose actual exit code differs from its pinned code and a `failure` with `check`, `input`, `expected` and `actual`. Coder receives the failed commit and finding. Run the downstream roles again on the resulting candidate.
 - Any role can report `blocked` or `paused` with `failure.reason` and available checks. A conflict between `examples` and `qa_steps` goes to the user. From a paused or blocked run, the Lead uses `rework --specification` to involve Specifier and present a revised version for approval. For an ordinary blocker resolved within scope, use `rework` to reassign the role.
+- For a paused QA assignment, `rework` resumes QA on the candidate delivered by Hardener. If the commit changed during the pause, Coder takes that version back through the engineering checks. An already recorded QA-owned repair stays with QA and keeps its original harness and repair checks.
 - A committed edit to the approved JSON requires a fresh submission and approval, including when a later commit restores the original bytes. A worker who received the stale assignment submits `superseded` using the old approval identifiers, clean current commit and `failure.reason`. A rollback uses a new commit so every candidate and finding remains inspectable.
 
 [Original Swarm Forge six-pack](https://github.com/unclebob/swarm-forge/blob/066a62ffa6cbc8c859262536dc579fecf8535ebb/README.md)

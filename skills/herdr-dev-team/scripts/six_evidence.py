@@ -12,7 +12,7 @@ SIX_STATUSES = {
     "cleaner": {"done", "fail", "blocked", "paused", "superseded"},
     "architect": {"done", "fail", "blocked", "paused", "superseded"},
     "hardener": {"done", "fail", "blocked", "paused", "superseded"},
-    "qa": {"pass", "fail", "blocked", "paused", "superseded"},
+    "qa": {"pass", "fail", "repair", "blocked", "paused", "superseded"},
 }
 SIX_CHECKS = {
     "specifier": {}, "coder": {"unit": 0, "acceptance": 0},
@@ -21,6 +21,22 @@ SIX_CHECKS = {
     "hardener": {"unit": 0, "acceptance": 0, "mutation": 1},
     "qa": {"user-entry": 0},
 }
+QA_FINDINGS = {"fail", "repair"}
+
+
+def qa_repair_checks(pinned):
+    checks = {}
+    for role, names in (("coder", ("unit", "acceptance")),
+                        ("architect", ("properties", "dependencies"))):
+        for name in names:
+            if name not in pinned[role]:
+                continue
+            check = pinned[role][name]
+            qa_check = pinned["qa"].get(name)
+            if qa_check and any(qa_check[key] != check[key] for key in ("command", "exit_code")):
+                raise ValueError(f"conflicting QA and {role} pins for local repair check {name}. Report fail.")
+            checks[name] = check
+    return checks
 
 
 def json_object(body, description):
@@ -56,6 +72,40 @@ def validate_six_spec(body):
     return spec
 
 
+def qa_mismatch(expected, observed):
+    def preview(value, start=0, limit=120):
+        truncated = isinstance(value, str) and limit is not None and len(value) > start + limit
+        if isinstance(value, str) and limit is not None:
+            value = value[start:start + limit]
+        rendered = json.dumps(value, ensure_ascii=False)
+        if not rendered.isprintable():
+            rendered = json.dumps(value, ensure_ascii=True)
+        return rendered + " [truncated]" if truncated else rendered
+
+    differences = []
+    for step, (wanted, actual) in enumerate(zip(expected, observed), start=1):
+        if wanted == actual:
+            continue
+        if len(differences) == 3:
+            differences.append("See the archived observations for further mismatches.")
+            break
+        command = preview(wanted["command"], limit=120 if differences else None)
+        fields = [f"Step {step} {command}"]
+        for key in ("stdout", "stderr", "exit_code"):
+            left, right = wanted[key], actual[key]
+            if left == right:
+                continue
+            start = 0
+            if isinstance(left, str):
+                offset = next((i for i, (a, b) in enumerate(zip(left, right)) if a != b),
+                              min(len(left), len(right)))
+                start = max(0, offset - 40)
+            label = f"{key} from character {start + 1}" if start else key
+            fields.append(f"{label} expected {preview(left, start)}, observed {preview(right, start)}")
+        differences.append("\n".join(fields))
+    return "\n".join(differences)
+
+
 def validate_qa(project, script_path, script, log, report, status, observations, expected):
     """Bind the independent harness and observed user-entry output to the receipt."""
     try:
@@ -78,5 +128,5 @@ def validate_qa(project, script_path, script, log, report, status, observations,
         raise ValueError("QA user-entry log must match the commit, script, observations and exit code")
     if observations != expected and status == "pass":
         raise ValueError("QA pass requires observations matching the approved qa_steps")
-    if observations == expected and status == "fail":
-        raise ValueError("QA fail requires a mismatch with the approved qa_steps")
+    if observations == expected and status in QA_FINDINGS:
+        raise ValueError(f"QA {status} requires a mismatch with the approved qa_steps")
