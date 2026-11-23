@@ -165,10 +165,10 @@ def assignment_message(db, store, run, item, number):
     card = get_card(db, run["id"], item["card_version"])
     role, pack = item["role"], run["pack"]
     role_card = json.loads(run["role_cards"])[role]
-    checks = json.loads(card["checks"])[role]
+    checks = json.loads(card["checks"])
     command = ["python3", str(Path(__file__).resolve().with_name("handoff.py")), str(store),
                pack, run["id"], "report", role, str(item["round"])]
-    context = four_pack.assignment_context(db, run, item) if pack != "two" else ""
+    context = four_pack.assignment_context(db, run, item, checks) if pack != "two" else ""
     source = ""
     if item["source_receipt"] is not None:
         prior = db.execute("SELECT status, payload FROM receipts WHERE id = ?",
@@ -181,7 +181,7 @@ def assignment_message(db, store, run, item, number):
         f"Branch: {run['branch']}. Baseline: {run['baseline']}. Input commit: {item['input_commit']}.\n"
         f"Private evidence directory: {store}.\n\n"
         f"Task card (version {card['version']}):\n{card['body']}\n"
-        f"Frozen checks: {encode(checks)}\n{context}{source}\n"
+        f"Frozen checks: {encode(checks[role])}\n{context}{source}\n"
         f"Role instructions ({role_card['path']}):\n{role_card['body']}\n"
         f"Report with: {shlex.join(command)} STATUS --result RESULT_FILE\n"
         f"Use one of {', '.join(roles(pack)[role])} for STATUS and a UTF-8 JSON file for RESULT_FILE."

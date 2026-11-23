@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 
-from six_evidence import SIX_CHECKS, SIX_STATUSES, validate_qa, validate_six_spec
+from six_evidence import QA_FINDINGS, SIX_CHECKS, SIX_STATUSES, qa_repair_checks, validate_qa, validate_six_spec
 
 
 STATUSES = {"coder": {"done", "blocked", "paused"}, "cleaner": {"pass", "fail", "blocked", "paused"}}
@@ -242,12 +242,20 @@ def mutation_proof(project, commit, mutation, pinned, green, red, patch, *, exam
 
 def validate(project: Path, branch: str, input_commit: str, role: str, status: str,
              payload: dict, store: Path, checks: dict, *, pack="two", spec_path=None,
-             qa_script_snapshot=None) -> None:
+             qa_script_snapshot=None, qa_repair_commit=None) -> None:
     """Validate a receipt and add durable snapshot locations to its evidence records."""
     statuses = {"four": FOUR_STATUSES, "six": SIX_STATUSES}.get(pack, STATUSES)
     if role not in statuses or status not in statuses[role]:
         raise ValueError(f"invalid {role} receipt status {status}")
-    pinned = validate_checks(checks, pack=pack)[role]
+    role_checks = validate_checks(checks, pack=pack)
+    pinned = role_checks[role]
+    if pack == "six" and role == "qa":
+        if qa_repair_commit is not None and status == "repair":
+            raise ValueError("QA is already assigned a local repair. Use fail to return a remaining defect to Coder.")
+        if status == "repair" or qa_repair_commit is not None:
+            repair_checks = qa_repair_checks(role_checks)
+            if qa_repair_commit is not None:
+                pinned = {**pinned, **repair_checks}
     if not isinstance(payload, dict):
         raise ValueError("receipt must be an object")
     if not COMMIT.fullmatch(input_commit) or payload.get("input_commit") != input_commit:
@@ -257,6 +265,8 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         raise ValueError("receipt commit must be a full Git commit ID")
     if not isinstance(payload.get("issues"), str):
         raise ValueError("receipt issues must be a string")
+    if status == "repair":
+        required_text(payload, "issues", "QA local repair diagnosis")
     try:
         project = project.resolve(strict=True)
         store = store.resolve(strict=True)
@@ -268,6 +278,11 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
     require_clean = status not in {"blocked", "paused"}
     worktree(project, branch, input_commit, commit, require_clean=require_clean,
              allow_same_tree=(pack in {"four", "six"} and status == "superseded"))
+    if qa_repair_commit is not None and status == "pass":
+        if commit == qa_repair_commit:
+            raise ValueError("QA local repair must deliver a changed descendant of the failed commit")
+        if input_commit != qa_repair_commit:
+            worktree(project, branch, qa_repair_commit, commit, require_clean=True)
 
     rows = payload.get("checks")
     if not isinstance(rows, list):
@@ -334,13 +349,15 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         qa = payload.get("qa")
         if isinstance(qa, dict) and "script_snapshot" in qa:
             raise ValueError("QA script snapshot location is assigned at acceptance")
-        if status in {"pass", "fail"}:
-            if commit != input_commit:
+        if status in QA_FINDINGS or status == "pass":
+            if qa_repair_commit is None and commit != input_commit:
                 raise ValueError("QA receipt must use the assigned input commit")
             if not isinstance(qa, dict):
                 raise ValueError("QA receipt requires a script and observations")
-            if status == "fail" and payload["failure"]["check"] != "user-entry":
+            if status in QA_FINDINGS and qa_repair_commit is None and payload["failure"]["check"] != "user-entry":
                 raise ValueError("QA failure must reference the user-entry check")
+            if "user-entry" not in reported:
+                raise ValueError("QA receipt requires the user-entry check")
             from spec_artifact import checked_out_spec
 
             spec = checked_out_spec(project, commit, spec_path)
@@ -349,8 +366,11 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
             if (qa_script_snapshot is not None
                     and f"evidence/{hashlib.sha256(script).hexdigest()}" != qa_script_snapshot):
                 raise ValueError("QA recheck must use the same script bytes as the prior failure")
+            verdict = status
+            if status == "fail" and payload["failure"]["check"] != "user-entry":
+                verdict = "pass" if reported["user-entry"]["exit_code"] == 0 else "fail"
             validate_qa(project, script_path, script, logs["user-entry"], reported["user-entry"],
-                        status, qa.get("observations"), expected)
+                        verdict, qa.get("observations"), expected)
             evidence.append((qa, "script_snapshot", script))
 
     artifacts = payload.get("artifacts", [])
