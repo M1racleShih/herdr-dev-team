@@ -256,9 +256,12 @@ if __name__ == "__main__":
         return self.active(run, "qa", number, commit)
 
     def test_human_approval_and_resume_are_durable(self):
+        card = "# 加一\n目标\u3000输入 2 应显示 3。\n"
+        self.write(self.card, card)
         run, spec = self.waiting()
         before = self.store_contents(), self.send_log.read_bytes()
         view = self.resume(run)
+        self.assertEqual(view["card"]["body"], card)
         self.assertEqual(view["pack"], "six")
         self.assertEqual(view["phase"], "waiting-for-human")
         self.assertEqual(list(view["assignments"]), ["specifier:1"])

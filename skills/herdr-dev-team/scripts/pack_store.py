@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import unicodedata
 
 from pack_evidence import git
 
@@ -65,7 +66,7 @@ def nonempty(value, label):
 
 
 def guard_message(value):
-    if any(not ch.isprintable() and ch not in "\n\t" for ch in value):
+    if any(not ch.isprintable() and ch not in "\n\t" and unicodedata.category(ch) != "Zs" for ch in value):
         raise ValueError("dispatch text or path contains terminal control characters")
     return value
 
