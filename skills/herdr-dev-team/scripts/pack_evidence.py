@@ -7,6 +7,8 @@ import re
 import subprocess
 import tempfile
 
+from six_evidence import SIX_CHECKS, SIX_STATUSES, validate_qa, validate_six_spec
+
 
 STATUSES = {"coder": {"done", "blocked", "paused"}, "cleaner": {"pass", "fail", "blocked", "paused"}}
 REQUIRED_CHECKS = {"coder": {"unit": 0}, "cleaner": {"unit": 0, "mutation": 1}}
@@ -33,9 +35,9 @@ def required_text(record, key, description):
 
 def validate_checks(checks, *, pack="two"):
     """Return pinned checks by role and name after validating the task configuration."""
-    required_checks = FOUR_CHECKS if pack == "four" else REQUIRED_CHECKS
+    required_checks = {"four": FOUR_CHECKS, "six": SIX_CHECKS}.get(pack, REQUIRED_CHECKS)
     if not isinstance(checks, dict) or checks.keys() != required_checks.keys():
-        names = ", ".join(required_checks) if pack == "four" else "coder and cleaner"
+        names = ", ".join(required_checks) if pack in {"four", "six"} else "coder and cleaner"
         raise ValueError(f"checks must define {names}")
     by_role = {}
     for role, required in required_checks.items():
@@ -53,24 +55,26 @@ def validate_checks(checks, *, pack="two"):
             if name in by_name:
                 raise ValueError(f"duplicate {role} check {name}")
             by_name[name] = check
-        if pack == "four" and role == "architect" and "dependencies" in by_name:
+        if pack in {"four", "six"} and role == "architect" and "dependencies" in by_name:
             required = {**required, "dependencies": 0}
         for name, status in required.items():
             if name not in by_name or by_name[name]["exit_code"] != status:
                 raise ValueError(f"{role} requires check {name} with exit code {status}")
         by_role[role] = by_name
-    final_role = "architect" if pack == "four" else "cleaner"
-    final = by_role[final_role]
+    mutation_role = {"four": "architect", "six": "hardener"}.get(pack, "cleaner")
+    mutation_role_checks = by_role[mutation_role]
     mutations = [("mutation", "unit")]
     if pack == "four":
         mutations.append(("example-mutation", "acceptance"))
-        acceptance = final["acceptance"]["command"]
-        if any(by_role[role]["acceptance"]["command"] != acceptance for role in ("coder", "refactorer")):
+    if pack in {"four", "six"}:
+        acceptance = mutation_role_checks["acceptance"]["command"]
+        other_roles = ("coder", "refactorer") if pack == "four" else ("coder", "cleaner", "architect")
+        if any(by_role[role]["acceptance"]["command"] != acceptance for role in other_roles):
             raise ValueError("all downstream roles must use the same acceptance command")
     for name, baseline in mutations:
-        mutation = final[name]
-        if mutation["command"] != final[baseline]["command"]:
-            raise ValueError(f"{final_role} {baseline} and {name} checks must use the same command")
+        mutation = mutation_role_checks[name]
+        if mutation["command"] != mutation_role_checks[baseline]["command"]:
+            raise ValueError(f"{mutation_role} {baseline} and {name} checks must use the same command")
         if "test" in mutation or "assertion" in mutation:
             required_text(mutation, "test", "pinned mutation check")
             required_text(mutation, "assertion", "pinned mutation check")
@@ -121,7 +125,7 @@ def worktree(project, branch, input_commit, commit, *, require_clean, allow_same
                 raise ValueError("check-only receipts must use the assigned input commit")
 
 
-def evidence_bytes(store, project, record, key, description):
+def read_evidence(store, project, record, key, description):
     value = required_text(record, key, description)
     try:
         path = (store / value).resolve(strict=True)
@@ -134,7 +138,11 @@ def evidence_bytes(store, project, record, key, description):
         raise ValueError(f"cannot read {description} {key}: {exc}") from exc
     if not data.strip():
         raise ValueError(f"{description} {key} is empty")
-    return data
+    return path, data
+
+
+def evidence_bytes(store, project, record, key, description):
+    return read_evidence(store, project, record, key, description)[1]
 
 
 def archived_path(store, data):
@@ -233,9 +241,10 @@ def mutation_proof(project, commit, mutation, pinned, green, red, patch, *, exam
 
 
 def validate(project: Path, branch: str, input_commit: str, role: str, status: str,
-             payload: dict, store: Path, checks: dict, *, pack="two", spec_path=None) -> None:
+             payload: dict, store: Path, checks: dict, *, pack="two", spec_path=None,
+             qa_script_snapshot=None) -> None:
     """Validate a receipt and add durable snapshot locations to its evidence records."""
-    statuses = FOUR_STATUSES if pack == "four" else STATUSES
+    statuses = {"four": FOUR_STATUSES, "six": SIX_STATUSES}.get(pack, STATUSES)
     if role not in statuses or status not in statuses[role]:
         raise ValueError(f"invalid {role} receipt status {status}")
     pinned = validate_checks(checks, pack=pack)[role]
@@ -258,7 +267,7 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         raise ValueError(f"cannot access the project or evidence store: {exc}") from exc
     require_clean = status not in {"blocked", "paused"}
     worktree(project, branch, input_commit, commit, require_clean=require_clean,
-             allow_same_tree=(pack == "four" and status == "superseded"))
+             allow_same_tree=(pack in {"four", "six"} and status == "superseded"))
 
     rows = payload.get("checks")
     if not isinstance(rows, list):
@@ -303,12 +312,16 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         mutation_checks.append(("example-mutation", "acceptance"))
         if status == "pass":
             required_text(payload, "architecture", "Architect receipt")
+    if pack == "six" and role == "architect" and status == "done":
+        required_text(payload, "architecture", "Architect receipt")
+    prove_mutation = ((status == "pass" and pack != "six")
+                      or (pack == "six" and role == "hardener" and status == "done"))
     for name, baseline in mutation_checks:
         mutation = reported.get(name)
-        if mutation is None or (status != "pass" and "patch" not in mutation):
+        if mutation is None or (not prove_mutation and "patch" not in mutation):
             continue
         patch = evidence_bytes(store, project, mutation, "patch", f"{name} check")
-        if status == "pass":
+        if prove_mutation:
             changed = mutation_proof(project, commit, mutation, pinned[name], logs[baseline], logs[name], patch,
                                      example_path=spec_path if name == "example-mutation" else None)
             if name == "mutation" and spec_path in changed:
@@ -316,6 +329,29 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         else:
             replay_patch(project, commit, patch)
         evidence.append((mutation, "patch_snapshot", patch))
+
+    if pack == "six" and role == "qa":
+        qa = payload.get("qa")
+        if isinstance(qa, dict) and "script_snapshot" in qa:
+            raise ValueError("QA script snapshot location is assigned at acceptance")
+        if status in {"pass", "fail"}:
+            if commit != input_commit:
+                raise ValueError("QA receipt must use the assigned input commit")
+            if not isinstance(qa, dict):
+                raise ValueError("QA receipt requires a script and observations")
+            if status == "fail" and payload["failure"]["check"] != "user-entry":
+                raise ValueError("QA failure must reference the user-entry check")
+            from spec_artifact import checked_out_spec
+
+            spec = checked_out_spec(project, commit, spec_path)
+            expected = validate_six_spec(spec["body"])["qa_steps"]
+            script_path, script = read_evidence(store, project, qa, "script", "QA evidence")
+            if (qa_script_snapshot is not None
+                    and f"evidence/{hashlib.sha256(script).hexdigest()}" != qa_script_snapshot):
+                raise ValueError("QA recheck must use the same script bytes as the prior failure")
+            validate_qa(project, script_path, script, logs["user-entry"], reported["user-entry"],
+                        status, qa.get("observations"), expected)
+            evidence.append((qa, "script_snapshot", script))
 
     artifacts = payload.get("artifacts", [])
     if not isinstance(artifacts, list):

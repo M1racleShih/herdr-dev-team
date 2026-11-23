@@ -350,7 +350,7 @@ def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("run_dir", type=Path, help="private shared local run directory")
     commands = cli.add_subparsers(dest="command", required=True)
-    for pack in ("two", "four"):
+    for pack in ("two", "four", "six"):
         command = commands.add_parser(pack, add_help=False, help=f"manage a SQLite {pack}-pack run")
         command.add_argument("arguments", nargs=argparse.REMAINDER, metavar="init | RUN_ID COMMAND")
     init = commands.add_parser("init", help="record the user-confirmed settings and terminal IDs")
@@ -388,7 +388,7 @@ def parser():
 
 def main():
     # Let the pack parser own help and options below its namespace.
-    if len(sys.argv) >= 3 and sys.argv[2] in ("two", "four"):
+    if len(sys.argv) >= 3 and sys.argv[2] in ("two", "four", "six"):
         from pack_evidence import validate
         import two_pack
 
