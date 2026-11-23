@@ -1,36 +1,51 @@
 # Herdr Dev Team
 
-An Agent Skill for leading development with Herdr. An interactive Leader sends work to a Pi Coder, requests independent review and performs final acceptance. Workers save their results and notify the Leader. An interrupted Leader can reopen its run and pick up the next handoff.
+An Agent Skill for delivering changes through a team of local Herdr agents. Choose a pack for each task. The handoff helper records which role owns the next step, the Git commit under review and the evidence for each result.
 
-## Use it
+| Pack | When to use it | Who signs off |
+| --- | --- | --- |
+| [Two-pack](skills/herdr-dev-team/references/handoffs.md#run-a-two-pack) | The behavior is clear. A Coder implements it and a Cleaner independently checks the code and tests. | Cleaner |
+| [Four-pack](skills/herdr-dev-team/references/four-pack.md) | You want to approve executable behavior examples before coding. A Refactorer and an Architect check the implementation. | Architect |
+| [Six-pack](skills/herdr-dev-team/references/six-pack.md) | You also need proof that the user's actual workflow works. After implementation, cleanup, architecture checks and test hardening, QA runs the approved steps through the user entry point. | Independent QA |
 
-Load `herdr-dev-team` in the Leader's agent and ask it to use Herdr for a concrete change. For example:
+## Install 0.2.0
 
-> Use Herdr Dev Team to fix the CSV export. Preserve quoted fields and empty rows. Verify the exported file by importing it again.
-
-The Leader offers the role configuration once. The defaults are Pi with `gpt-6.2-sol` at medium thinking for coding, the same model at high thinking for review, and up to five review rounds. The Coder uses Ponytail full. The Leader reports final QA as PASS or FAIL.
-
-Choose the layout in the same confirmation. In **Visible** mode, the Leader keeps its tab and focus. A separate `Development` tab shows the Coder on the left and the Reviewer on the right. In **Background** mode, both workers run through Core and send receipts to the Leader.
-
-Run the Leader inside a live Herdr terminal that accepts incoming messages. The participants need a shared local run directory, Python 3.8 or later on a POSIX host, and access to `hc`. Pi and the selected models must be available to the workers. The visible layout was exercised with Herdr Core 0.1.21 and Herdr App 0.1.16 on Linux.
-
-## Install 0.1.1
-
-The installable skill is [skills/herdr-dev-team](skills/herdr-dev-team/SKILL.md). Place that directory or a symlink in the project's skill discovery path. For a first import, add the skill to the dskills pool and activate it in the current project.
+From the project where you want to use the skill, import the release into your dskills pool.
 
 ```sh
-dskills install https://github.com/M1racleShih/herdr-dev-team.git --ref v0.1.1 --skill skills/herdr-dev-team
+dskills install https://github.com/M1racleShih/herdr-dev-team.git --ref v0.2.0 --skill skills/herdr-dev-team
+```
+
+For a project new to dskills, initialize it for the agent that will lead the team. This example uses Codex. In a project already managed by dskills, keep the existing configuration.
+
+```sh
+dskills init --project . --agent codex
+```
+
+Activate the skill for the project.
+
+```sh
 dskills plug --project . herdr-dev-team
 ```
 
-Use the project's existing activation mode. Refresh or restart the Leader session if it has already loaded its skill catalog.
+You can also place [the skill directory](skills/herdr-dev-team) or a symlink in your agent's skill discovery path. Refresh or restart the Leader session if it has already loaded its skill catalog.
 
-## Handoffs and acceptance
+## Use it
 
-The [skill](skills/herdr-dev-team/SKILL.md) defines the workflow. [Role setup](skills/herdr-dev-team/references/roles.md) covers Ponytail and the briefs; the [handoff guide](skills/herdr-dev-team/references/handoffs.md) covers the state helper and crash recovery. For a target that needs human-approved executable examples before coding, use the [four-pack workflow](skills/herdr-dev-team/references/four-pack.md). For independent QA from the user’s entry point, use the [six-pack workflow](skills/herdr-dev-team/references/six-pack.md). Its final receipt ties the candidate commit to the approved steps, observed output and replayable QA script. Normal delivery runs without polling or a background service. If a notification is lost while the Leader is offline, recovery starts the next time the run is opened.
+Run the Leader in a live Herdr terminal that accepts incoming messages. The team needs a shared local filesystem, Git, Python 3.8 or later on a POSIX host, and access to `hc`. For the documented Pi worker setup, install Pi and configure the models the workers will use.
 
-Run the regression suite from the repository root:
+Give the Leader a target, a pack and the behavior you expect. For example:
+
+> Use Herdr Dev Team six-pack to fix the CSV export. Preserve quoted fields and empty rows. Have QA run the export command and import the resulting file again.
+
+For four-pack and six-pack, the Specifier submits the examples for your approval before the Coder starts. Each role reports its checked commit and evidence. Use `resume` to inspect a run and `recover` to resolve the next handoff after an interruption. Ordinary handoffs can proceed while the Lead is offline.
+
+The [legacy Coder/Reviewer workflow](skills/herdr-dev-team/references/handoffs.md#prepare-a-legacy-statejson-run) is also available. Its default Pi setup uses `gpt-6.2-sol` at medium thinking for the Coder and high for the Reviewer. The Coder uses Ponytail full, and the Leader handles final QA with up to five review rounds. Visible mode keeps the Leader's focus and opens a separate `Development` tab with the Coder on the left and Reviewer on the right. Background mode uses Herdr Core. See the [role setup](skills/herdr-dev-team/references/roles.md) and [layout instructions](skills/herdr-dev-team/references/handoffs.md#launch-the-workers).
+
+## Regression tests
+
+Run the same command that GitHub Actions runs on pull requests.
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -B -m unittest discover -s tests -v
 ```
