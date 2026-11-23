@@ -1,6 +1,6 @@
 ---
 name: herdr-dev-team
-description: Lead a Herdr development team when a user requests delegated coding, independent review and final acceptance through herdr-core or herdr-app.
+description: Run a Herdr two-pack with a Coder and Cleaner, or coordinate a legacy Coder and Reviewer handoff through Core or App.
 metadata:
   version: "0.1.1"
 ---
@@ -10,6 +10,10 @@ metadata:
 Use this workflow in a live, interactive Leader terminal that can receive Herdr messages. Keep the Leader session open between turns. Confirm the working directory, parent address and writable run directory shared by the workers. Read `hc --skill` for the installed transport. Read `herdr-app --skill` when the user wants visible tabs or needs to take over a terminal. Address messages by core terminal ID.
 
 ## Agree on the run
+
+For a two-pack target, use a dedicated local branch and worktree. Freeze the Markdown task card, project checks and two separate interactive worker addresses in the project SQLite store. Coder owns the behavior and tests. Cleaner independently checks the commit and can change code and tests to improve quality. An accepted report dispatches the next role automatically. Inspect the record with `resume` and use `recover` explicitly after interruption. See [two-pack commands and receipt format](references/handoffs.md#run-a-two-pack). The approved target and checks govern the run. Leave the merge and push decision to the user.
+
+The remaining configuration and Leader-driven steps below apply to the legacy Coder/Reviewer workflow.
 
 Write down the user's goal, permitted edits, starting worktree and observable acceptance criteria. The Leader owns the plan, assignments, review budget and final QA. Treat publication, commits and changes to host configuration according to the user's authorization.
 
