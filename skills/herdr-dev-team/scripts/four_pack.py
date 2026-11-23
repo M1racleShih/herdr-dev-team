@@ -1,10 +1,10 @@
-"""Four-pack approval gate, immutable example versions and role transitions."""
+"""Shared approval gate, immutable specification versions and serial role transitions."""
 
 import json
 from pathlib import Path
 import re
 
-from pack_evidence import FOUR_STATUSES, git
+from pack_evidence import FOUR_STATUSES, git, validate_six_spec
 from pack_store import (
     accepted_receipt, assignment_id, check_dispatch_project, current_assignment, encode, get_attempt,
     insert_assignment, nonempty, now, project_baseline,
@@ -14,6 +14,8 @@ from spec_artifact import checked_out_spec
 
 ROLES = {role: tuple(sorted(statuses)) for role, statuses in FOUR_STATUSES.items()}
 NEXT = {"coder": "refactorer", "refactorer": "architect"}
+SIX_NEXT = {"coder": "cleaner", "cleaner": "architect", "architect": "hardener", "hardener": "qa"}
+FINAL_ROLE = {"four": "architect", "six": "qa"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS four_runs (
     run_id TEXT PRIMARY KEY REFERENCES runs(id), examples TEXT NOT NULL
@@ -23,6 +25,11 @@ CREATE TABLE IF NOT EXISTS four_specs (
     spec_commit TEXT NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL,
     source_receipt INTEGER NOT NULL REFERENCES receipts(id), approval TEXT,
     PRIMARY KEY (run_id, version)
+);
+"""
+SIX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS six_runs (
+    run_id TEXT PRIMARY KEY REFERENCES four_runs(run_id)
 );
 """
 
@@ -135,7 +142,7 @@ def approve(db, run, version, sha256, evidence):
 def rework(db, run, *, specification=False):
     phase = run["phase"]
     if phase not in ("waiting-for-human", "paused", "blocked"):
-        raise ValueError("rework requires a waiting, paused or blocked four-pack run")
+        raise ValueError(f"rework requires a waiting, paused or blocked {run['pack']}-pack run")
     current = current_assignment(db, run)
     if current is None:
         spec = latest_spec(db, run)
@@ -149,9 +156,18 @@ def rework(db, run, *, specification=False):
     return reopen(db, run, role, head, source)
 
 
+def prior_qa_failure(db, run, item, spec):
+    return db.execute(
+        "SELECT r.id, r.payload FROM receipts r JOIN assignments a ON a.id = r.assignment_id "
+        "WHERE a.run_id = ? AND a.role = 'qa' AND a.round >= ? AND a.round < ? "
+        "AND r.accepted = 1 AND r.status = 'fail' ORDER BY a.round DESC LIMIT 1",
+        (run["id"], spec["version"], item["round"]),
+    ).fetchone()
+
+
 def validate_receipt(db, store, run, item, status, payload, checks, validate):
     project = Path(run["project"])
-    role = item["role"]
+    role, pack = item["role"], run["pack"]
     path = examples_path(db, run)
     if role == "specifier":
         head_at_or_after(run, item["input_commit"])
@@ -161,12 +177,25 @@ def validate_receipt(db, store, run, item, status, payload, checks, validate):
         if (not spec or not spec["approval"] or not isinstance(version, dict)
                 or type(version.get("version")) is not int or version != spec_id(spec)):
             raise ValueError("receipt must name the assignment's approved specification version and SHA-256")
+    evidence_options = {}
+    if pack == "six" and ((role == "coder" and status == "done")
+                          or (role == "qa" and status in ("pass", "fail"))):
+        previous = prior_qa_failure(db, run, item, spec)
+        if previous is not None:
+            prior_qa = json.loads(previous["payload"])
+            if role == "qa":
+                evidence_options["qa_script_snapshot"] = prior_qa["qa"]["script_snapshot"]
+            elif payload.get("commit") == prior_qa["commit"]:
+                raise ValueError("Coder must deliver a new commit to address the accepted QA failure")
     validate(project, run["branch"], item["input_commit"], role, status, payload, store, checks,
-             pack="four", spec_path=path)
+             pack=pack, spec_path=path, **evidence_options)
     if role == "specifier" and status == "done":
         if payload.get("examples") != path:
             raise ValueError(f"Specifier receipt examples must name the pinned project-relative path: {path}")
-        return checked_out_spec(project, payload["commit"], path)
+        artifact = checked_out_spec(project, payload["commit"], path)
+        if pack == "six":
+            validate_six_spec(artifact["body"])
+        return artifact
     if role != "specifier" and status not in ("paused", "blocked", "superseded"):
         artifact = checked_out_spec(project, payload["commit"], path)
         if artifact["sha256"] != spec["sha256"]:
@@ -182,12 +211,13 @@ def transition(db, run, item, status, receipt_id, artifact):
                    (run["id"], number, artifact["commit"], artifact["sha256"], artifact["body"], receipt_id))
         phase = "waiting-for-human"
     elif status == "done":
-        phase, following = "active", (NEXT[role], number)
+        successors = SIX_NEXT if run["pack"] == "six" else NEXT
+        phase, following = "active", (successors[role], number)
     elif status == "fail":
         phase, following = "active", ("coder", next_round(db, run))
     elif status == "superseded":
         phase, following = "active", ("specifier", next_round(db, run))
-    elif role == "architect" and status == "pass":
+    elif role == FINAL_ROLE[run["pack"]] and status == "pass":
         phase = "completed"
     return phase, following
 
@@ -207,17 +237,19 @@ def resume(db, run, view):
     if phase == "ready":
         return "Ready to assign Specifier."
     if phase == "waiting-for-human":
-        return f"Waiting for human approval of examples version {spec['version']} (SHA-256 {spec['sha256']})."
+        description = "examples and QA steps" if run["pack"] == "six" else "examples"
+        return f"Waiting for human approval of {description} version {spec['version']} (SHA-256 {spec['sha256']})."
     if phase == "completed":
         item = view["assignments"][next(reversed(view["assignments"]))]
         receipt, decision = item.get("receipt", {}), item.get("decision", {})
-        if (item["role"] == "architect" and receipt.get("status") == "pass"
+        if (item["role"] == FINAL_ROLE[run["pack"]] and receipt.get("status") == "pass"
                 and decision.get("phase") == "completed" and decision.get("receipt") == receipt["id"]):
             commit = view["final_commit"] = receipt["result"]["commit"]
-            return f"Architect accepted {commit[:7]}; four-pack completed."
+            role = "QA" if run["pack"] == "six" else "Architect"
+            return f"{role} accepted {commit[:7]}; {run['pack']}-pack completed."
         return "Completion record needs inspection."
     item = view["assignments"][run["current"]]
-    role = item["role"].capitalize()
+    role = "QA" if item["role"] == "qa" else item["role"].capitalize()
     if phase in ("paused", "blocked"):
         return f"{role} is {phase}."
     delivery = item["delivery"]["status"]
@@ -225,24 +257,37 @@ def resume(db, run, view):
 
 
 def assignment_context(db, run, item):
-    if item["role"] == "specifier":
+    pack, role = run["pack"], item["role"]
+    if role == "specifier":
         path = examples_path(db, run)
-        return f"\nPinned examples file: {path}\n"
+        description = "specification JSON file for examples and QA steps" if pack == "six" else "examples file"
+        return f"\nPinned {description}: {path}\n"
     spec = latest_spec(db, run, item["round"])
     if not spec or not spec["approval"]:
         raise ValueError("downstream assignment requires an approved specification")
     actual = checked_out_spec(Path(run["project"]), item["input_commit"], spec["path"])
     if actual["sha256"] != spec["sha256"]:
         raise ValueError("assignment must use the exact approved examples")
-    return (f"\nApproved examples {spec['path']} at {spec['commit']}; "
-            f"version {spec['version']}, SHA-256 {spec['sha256']}.\n"
-            "Read the durable specification body with four RUN_ID resume.\n")
+    description = "examples and QA steps" if pack == "six" else "examples"
+    context = (f"\nApproved {description} {spec['path']} at {spec['commit']}; "
+               f"version {spec['version']}, SHA-256 {spec['sha256']}.\n"
+               f"Read the durable specification body with {pack} RUN_ID resume.\n")
+    if pack == "six" and role in ("coder", "qa"):
+        previous = prior_qa_failure(db, run, item, spec)
+        if previous is not None:
+            failure = json.loads(previous["payload"])
+            if role == "qa":
+                context += f"Reuse the script bytes from QA snapshot {failure['qa']['script_snapshot']} in the private store.\n"
+            elif item["source_receipt"] != previous["id"]:
+                finding = json.dumps(failure["failure"], ensure_ascii=True, indent=2)
+                context += f"Previous QA finding at {failure['commit']}:\n{finding}\n"
+    return context
 
 
 def attach_parser(commands, positive):
-    command = commands.add_parser("approve", help="relay the human's approval of the exact examples")
+    command = commands.add_parser("approve", help="relay the human's approval of the exact specification")
     command.add_argument("version", type=positive)
     command.add_argument("sha256")
     command.add_argument("--evidence", required=True)
     retry = commands.add_parser("rework", help="reassign a waiting, paused or blocked role")
-    retry.add_argument("--specification", action="store_true", help="return to Specifier for new examples")
+    retry.add_argument("--specification", action="store_true", help="return to Specifier for a new specification")

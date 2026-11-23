@@ -1,4 +1,4 @@
-"""SQLite and Git records shared by both serial engineering packs."""
+"""SQLite and Git records shared by the serial engineering packs."""
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -132,14 +132,18 @@ def transaction(db, *, write=True):
 
 
 def get_run(db, run_id, expected_pack=None):
-    # Existing databases keep their original schema until the first four-pack init.
-    has_four = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='four_runs'").fetchone()
-    if has_four:
-        run = db.execute("SELECT runs.*, CASE WHEN f.run_id IS NULL THEN 'two' ELSE 'four' END AS pack "
-                         "FROM runs LEFT JOIN four_runs f ON runs.id = f.run_id WHERE runs.id = ?",
-                         (run_id,)).fetchone()
-    else:
-        run = db.execute("SELECT runs.*, 'two' AS pack FROM runs WHERE id = ?", (run_id,)).fetchone()
+    # Read older stores without requiring either specification table to exist.
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('four_runs', 'six_runs')")}
+    joins, choices = "", []
+    if "six_runs" in tables:
+        joins += " LEFT JOIN six_runs s ON runs.id = s.run_id"
+        choices.append("WHEN s.run_id IS NOT NULL THEN 'six'")
+    if "four_runs" in tables:
+        joins += " LEFT JOIN four_runs f ON runs.id = f.run_id"
+        choices.append("WHEN f.run_id IS NOT NULL THEN 'four'")
+    pack = f"CASE {' '.join(choices)} ELSE 'two' END" if choices else "'two'"
+    run = db.execute(f"SELECT runs.*, {pack} AS pack FROM runs{joins} WHERE runs.id = ?", (run_id,)).fetchone()
     if run is None or (expected_pack is not None and run["pack"] != expected_pack):
         raise ValueError(f"unknown {expected_pack or 'pack'} run: {run_id}")
     if run["pack_version"] != 1:

@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 
 import four_pack
-from pack_evidence import validate_checks
+from pack_evidence import SIX_STATUSES, validate_checks
 from pack_store import (
     SCHEMA, accepted_receipt, assignment_id, assignment_key, attempt_view, check_dispatch_project,
     check_location, connect, dispatch_summary, encode, get_assignment, get_attempt, get_card,
@@ -23,10 +23,13 @@ from spec_artifact import spec_path
 
 ROLES = {"coder": ("done", "blocked", "paused"),
          "cleaner": ("pass", "fail", "blocked", "paused")}
+SIX_ROLES = {role: tuple(sorted(statuses)) for role, statuses in SIX_STATUSES.items()}
 PACK_VERSION = 1
 
 
 def roles(pack):
+    if pack == "six":
+        return SIX_ROLES
     return four_pack.ROLES if pack == "four" else ROLES
 
 
@@ -42,8 +45,8 @@ def initialize(store, args, identity, pack):
     if len({leader, *workers.values()}) != len(workers) + 1:
         if pack == "two":
             raise ValueError("Delivery Lead, Coder and Cleaner need distinct local terminals")
-        raise ValueError("Delivery Lead and all four workers need distinct local terminals")
-    examples = spec_path(args.examples) if pack == "four" else None
+        raise ValueError(f"Delivery Lead and all {pack} workers need distinct local terminals")
+    examples = spec_path(args.examples) if pack != "two" else None
     project = args.project.resolve(strict=True)
     check_location(store, project)
     project_id, branch, baseline = project_baseline(project)
@@ -59,7 +62,10 @@ def initialize(store, args, identity, pack):
     run_id = uuid.uuid4().hex
     timestamp = now()
     with closing(connect(store, initialize=True)) as db:
-        db.executescript(SCHEMA + (four_pack.SCHEMA if examples else ""))
+        schema = SCHEMA + (four_pack.SCHEMA if examples else "")
+        if pack == "six":
+            schema += four_pack.SIX_SCHEMA
+        db.executescript(schema)
         with transaction(db):
             existing = db.execute("SELECT project_id FROM runs LIMIT 1").fetchone()
             if existing and existing["project_id"] != project_id:
@@ -70,6 +76,8 @@ def initialize(store, args, identity, pack):
                         timestamp, timestamp))
             if examples:
                 db.execute("INSERT INTO four_runs VALUES (?, ?)", (run_id, examples))
+            if pack == "six":
+                db.execute("INSERT INTO six_runs VALUES (?)", (run_id,))
             insert_card(db, run_id, 1, body, encode(checks), "initial task card supplied at init")
     return {"id": run_id, "run": run_id, "directory": str(store), "database": str(store / "two-pack.sqlite3"),
             "phase": "ready", "branch": branch, "baseline": baseline, "card_version": 1}, 0
@@ -124,7 +132,7 @@ def resume(db, run):
     pack = run["pack"]
     view.update(version=1, pack=pack, workers=json.loads(run["workers"]),
                 assignments={}, card_versions=[])
-    if pack == "four":
+    if pack != "two":
         del view["rounds"]
     for card in db.execute("SELECT * FROM cards WHERE run_id = ? ORDER BY version", (run["id"],)):
         entry = {key: card[key] for key in ("version", "body", "created_at", "approval", "approved_at")}
@@ -149,7 +157,7 @@ def resume(db, run):
         if item["decision"]:
             entry["decision"] = json.loads(item["decision"])
         view["assignments"][assignment_key(item["role"], item["round"])] = entry
-    view["summary"] = four_pack.resume(db, run, view) if pack == "four" else resume_summary(view)
+    view["summary"] = four_pack.resume(db, run, view) if pack != "two" else resume_summary(view)
     return view, 0
 
 
@@ -160,12 +168,12 @@ def assignment_message(db, store, run, item, number):
     checks = json.loads(card["checks"])[role]
     command = ["python3", str(Path(__file__).resolve().with_name("handoff.py")), str(store),
                pack, run["id"], "report", role, str(item["round"])]
-    context = four_pack.assignment_context(db, run, item) if pack == "four" else ""
+    context = four_pack.assignment_context(db, run, item) if pack != "two" else ""
     source = ""
     if item["source_receipt"] is not None:
         prior = db.execute("SELECT status, payload FROM receipts WHERE id = ?",
                            (item["source_receipt"],)).fetchone()
-        payload = json.dumps(json.loads(prior["payload"]), ensure_ascii=False, indent=2)
+        payload = json.dumps(json.loads(prior["payload"]), ensure_ascii=pack == "six", indent=2)
         source = f"\nPrior role receipt ({prior['status']}):\n{payload}\n"
     return guard_message(
         f"Herdr {pack}-pack assignment {item['id']} (send attempt {number}).\n"
@@ -220,7 +228,7 @@ def dispatch(db, store, run, item_id, send, *, recover=False, inspection=None):
                 if delivered:
                     touch_run(db, run)
                     return dispatch_summary(db, item)
-                if run["pack"] == "four":
+                if run["pack"] != "two":
                     changed = four_pack.changed_examples(db, run)
                     if changed:
                         replacement = four_pack.retire_changed_examples(db, run, changed)
@@ -235,7 +243,7 @@ def dispatch(db, store, run, item_id, send, *, recover=False, inspection=None):
                     touch_run(db, run)
                 return dispatch_summary(db, item)
 
-            if run["pack"] == "four" and get_run(db, run["id"])["current"] != assignment_key(
+            if run["pack"] != "two" and get_run(db, run["id"])["current"] != assignment_key(
                     item["role"], item["round"]):
                 return {"assignment": item_id, "delivery": {"status": "superseded"}}, 0
             check_dispatch_project(run, item["input_commit"])
@@ -257,7 +265,7 @@ def dispatch(db, store, run, item_id, send, *, recover=False, inspection=None):
 def start(db, store, run, send):
     with transaction(db):
         run = get_run(db, run["id"])
-        first = "specifier" if run["pack"] == "four" else "coder"
+        first = "specifier" if run["pack"] != "two" else "coder"
         item = get_assignment(db, assignment_id(run, first, 1))
         if item:
             return dispatch_summary(db, item)
@@ -282,7 +290,7 @@ def two_transition(run, number, status):
 
 def advance(db, run, item, status, payload, receipt_id, artifact):
     number = item["round"]
-    if run["pack"] == "four":
+    if run["pack"] != "two":
         phase, following = four_pack.transition(db, run, item, status, receipt_id, artifact)
     else:
         phase, following = two_transition(run, number, status)
@@ -334,7 +342,7 @@ def report(db, store, run, args, identity, send, validate):
                 raise ValueError(f"invalid {args.role} status; use {', '.join(statuses)}")
             card = get_card(db, run["id"], item["card_version"])
             checks = json.loads(card["checks"])
-            if pack == "four":
+            if pack != "two":
                 changed = four_pack.changed_examples(db, run)
                 if args.status == "superseded" and not changed:
                     raise ValueError("superseded requires a committed change to the examples")
@@ -405,7 +413,7 @@ def revise(db, store, run, args, send):
         if not approval or version == run["card_version"]:
             return {"run": run["id"], "card_version": version, "active": version == run["card_version"]}, 0
         allowed_phases = ("ready", "paused", "blocked")
-        if pack == "four":
+        if pack != "two":
             allowed_phases += ("waiting-for-human",)
         if run["phase"] not in allowed_phases:
             raise ValueError("activate a revised task card before dispatch or after the assigned worker pauses or blocks")
@@ -413,7 +421,7 @@ def revise(db, store, run, args, send):
                    (approval, now(), run["id"], version))
         db.execute("UPDATE runs SET card_version = ?, updated_at = ? WHERE id = ?", (version, now(), run["id"]))
         item_id = None
-        if run["phase"] != "ready" and pack == "four":
+        if run["phase"] != "ready" and pack != "two":
             item_id = four_pack.rework(db, get_run(db, run["id"]), specification=True)
         elif run["phase"] != "ready":
             last = current_assignment(db, run)
@@ -451,8 +459,9 @@ def init_parser(pack):
     cli.add_argument("--checks", required=True, type=Path)
     for role in roles(pack):
         cli.add_argument(f"--{role}", required=True, type=terminal)
-    if pack == "four":
-        cli.add_argument("--examples", required=True, help="committed project-relative examples path")
+    if pack != "two":
+        description = "examples and QA steps JSON" if pack == "six" else "examples"
+        cli.add_argument("--examples", required=True, help=f"committed project-relative {description} path")
     else:
         cli.add_argument("--rounds", type=positive, default=5)
     return cli
@@ -463,7 +472,7 @@ def run_parser(pack):
     cli.add_argument("run_id", help="run ID, or init to record a new run")
     commands = cli.add_subparsers(dest="command", required=True)
     commands.add_parser("resume", help="read the run without writing or sending")
-    first = "Specifier" if pack == "four" else "Coder"
+    first = "Specifier" if pack != "two" else "Coder"
     commands.add_parser("start", help=f"queue the initial {first} assignment")
     commands.add_parser("recover", help="inspect or claim the original assignment")
     receipt = commands.add_parser("report", help="submit a role receipt and advance automatically")
@@ -481,12 +490,12 @@ def run_parser(pack):
     revision.add_argument("--card", required=True, type=Path)
     revision.add_argument("--checks", type=Path)
     revision.add_argument("--approve-evidence")
-    if pack == "four":
+    if pack != "two":
         four_pack.attach_parser(commands, positive)
     return cli
 
 
-def four_command(db, store, run, args, send):
+def specification_command(db, store, run, args, send):
     with transaction(db):
         run = get_run(db, run["id"])
         if args.command == "approve":
@@ -532,8 +541,8 @@ def main(store, argv, *, identity, send, validate, pack="two"):
                 return start(db, store, run, send)
             if args.command == "revise":
                 return revise(db, store, run, args, send)
-            if pack == "four" and args.command != "reconcile":
-                result = four_command(db, store, run, args, send)
+            if pack != "two" and args.command != "reconcile":
+                result = specification_command(db, store, run, args, send)
                 if result is not None:
                     return result
                 run = get_run(db, args.run_id, pack)
