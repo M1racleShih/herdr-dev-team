@@ -1,0 +1,15 @@
+{
+  "action": "python3 handoff.py STORE two RUN resume",
+  "examples": [
+    {
+      "id": "cleaner_delivered",
+      "given": "第 1 轮，Coder 已交付，Cleaner 已收到派工，但尚无完成回执。{short_commit} 是 Coder 交付的提交 ID 前 7 位。",
+      "expected_summary": "第 1 轮，Coder 已交付 {short_commit}：已向 Cleaner 派工，尚无 Cleaner 完成回执。"
+    },
+    {
+      "id": "cleaner_accepted",
+      "given": "第 1 轮，Cleaner 验收通过，系统已接受其通过回执。{short_commit} 是该回执中通过验收的提交 ID 前 7 位。",
+      "expected_summary": "第 1 轮，Cleaner 已在 {short_commit} 验收通过，two-pack 已完成。"
+    }
+  ]
+}

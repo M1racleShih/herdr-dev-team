@@ -93,7 +93,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 '''
 
 
-class TwoPackTest(unittest.TestCase):
+class TwoPackFixture(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory(prefix="two-pack test ")
         self.addCleanup(scratch.cleanup)
@@ -242,16 +242,25 @@ class TwoPackTest(unittest.TestCase):
     def attempt_count(self, assignment):
         return self.rows("SELECT COUNT(*) FROM attempts WHERE assignment_id = ?", assignment["id"])[0][0]
 
+    def store_snapshot(self):
+        return {path.name: (path.stat().st_mtime_ns, path.read_bytes())
+                for path in self.store.iterdir() if path.is_file()}
+
     def assert_readonly_resume(self, run):
-        before = {path.name: (path.stat().st_mtime_ns, path.read_bytes())
-                  for path in self.store.iterdir() if path.is_file()}
+        before = self.store_snapshot()
         sends = self.sends()
-        state = self.resume(run)
-        self.assertEqual(state, self.resume(run))
-        self.assertEqual(before, {path.name: (path.stat().st_mtime_ns, path.read_bytes())
-                                  for path in self.store.iterdir() if path.is_file()})
-        self.assertEqual(self.sends(), sends)
-        return state
+
+        def read_once(attempt):
+            state = self.resume(run)
+            self.assertEqual(self.store_snapshot(), before,
+                             f"resume call {attempt} changed the store")
+            self.assertEqual(self.sends(), sends,
+                             f"resume call {attempt} changed the transport log")
+            return state
+
+        first = read_once(1)
+        self.assertEqual(read_once(2), first, "repeated resume returned different JSON")
+        return first
 
     @contextmanager
     def hold_cleaner_send(self, args):
@@ -276,6 +285,8 @@ class TwoPackTest(unittest.TestCase):
                         first.kill()
                         first.communicate(timeout=10)
 
+
+class TwoPackTest(TwoPackFixture):
     def test_project_db_preserves_multiple_runs_and_their_original_cards(self):
         first = self.init()["id"]
         original = self.assert_readonly_resume(first)

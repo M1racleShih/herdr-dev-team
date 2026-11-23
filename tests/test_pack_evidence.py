@@ -13,7 +13,7 @@ import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills/herdr-dev-team/scripts"
 sys.path.insert(0, str(SCRIPTS))
-from pack_evidence import validate, validate_checks
+from pack_evidence import replay_patch, validate, validate_checks
 
 
 UNIT_COMMAND = "python3 -m unittest discover -v"
@@ -195,6 +195,27 @@ AssertionError: {ASSERTION}
         self.write(patch, patch.read_text(encoding="utf-8").replace("'assigned'", "'previous'"))
         with self.assertRaisesRegex(ValueError, "cannot be replayed"):
             self.validate(self.payload(green, red), role="cleaner", status="pass")
+
+    def test_example_patch_cannot_change_another_path_mode_or_text_encoding(self):
+        self.git("config", "core.filemode", "true")
+        spec = self.project / "app.py"
+        for change, detail in (
+            ("other file", "edit only the approved specification file"),
+            ("executable bit", "without changing its mode"),
+            ("binary content", "leave UTF-8 text"),
+        ):
+            with self.subTest(change=change):
+                self.write(spec, "def summary():\n    return 'completed'\n")
+                if change == "other file":
+                    self.write(self.project / "test_app.py", "# unrelated edit\n")
+                elif change == "executable bit":
+                    spec.chmod(0o755)
+                else:
+                    spec.write_bytes(b"\0\xff")
+                patch = self.git("diff", "--binary").encode("utf-8")
+                self.git("restore", "--", "app.py", "test_app.py")
+                with self.assertRaisesRegex(ValueError, detail):
+                    replay_patch(self.project, self.base, patch, example_path="app.py")
 
     def test_accepts_rework_evidence_with_independent_check(self):
         checks = deepcopy(PINNED)

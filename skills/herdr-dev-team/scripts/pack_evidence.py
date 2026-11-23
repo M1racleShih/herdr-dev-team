@@ -1,4 +1,4 @@
-"""Validate two-pack receipts against the assigned worktree and pinned checks."""
+"""Validate engineering pack receipts against the assigned worktree and pinned checks."""
 
 import hashlib
 import os
@@ -10,6 +10,17 @@ import tempfile
 
 STATUSES = {"coder": {"done", "blocked", "paused"}, "cleaner": {"pass", "fail", "blocked", "paused"}}
 REQUIRED_CHECKS = {"coder": {"unit": 0}, "cleaner": {"unit": 0, "mutation": 1}}
+FOUR_STATUSES = {
+    "specifier": {"done", "blocked", "paused"},
+    "coder": {"done", "blocked", "paused", "superseded"},
+    "refactorer": {"done", "fail", "blocked", "paused", "superseded"},
+    "architect": {"pass", "fail", "blocked", "paused", "superseded"},
+}
+FOUR_CHECKS = {
+    "specifier": {}, "coder": {"unit": 0, "acceptance": 0},
+    "refactorer": {"unit": 0, "acceptance": 0, "properties": 0},
+    "architect": {"unit": 0, "acceptance": 0, "mutation": 1, "example-mutation": 1},
+}
 COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
@@ -20,12 +31,14 @@ def required_text(record, key, description):
     return value
 
 
-def validate_checks(checks):
+def validate_checks(checks, *, pack="two"):
     """Return pinned checks by role and name after validating the task configuration."""
-    if not isinstance(checks, dict) or checks.keys() != REQUIRED_CHECKS.keys():
-        raise ValueError("checks must define coder and cleaner")
+    required_checks = FOUR_CHECKS if pack == "four" else REQUIRED_CHECKS
+    if not isinstance(checks, dict) or checks.keys() != required_checks.keys():
+        names = ", ".join(required_checks) if pack == "four" else "coder and cleaner"
+        raise ValueError(f"checks must define {names}")
     by_role = {}
-    for role, required in REQUIRED_CHECKS.items():
+    for role, required in required_checks.items():
         if not isinstance(checks[role], list):
             raise ValueError(f"{role} checks must be a list")
         by_name = {}
@@ -40,17 +53,27 @@ def validate_checks(checks):
             if name in by_name:
                 raise ValueError(f"duplicate {role} check {name}")
             by_name[name] = check
+        if pack == "four" and role == "architect" and "dependencies" in by_name:
+            required = {**required, "dependencies": 0}
         for name, status in required.items():
             if name not in by_name or by_name[name]["exit_code"] != status:
                 raise ValueError(f"{role} requires check {name} with exit code {status}")
         by_role[role] = by_name
-    cleaner = by_role["cleaner"]
-    mutation = cleaner["mutation"]
-    if mutation["command"] != cleaner["unit"]["command"]:
-        raise ValueError("cleaner unit and mutation checks must use the same command")
-    if "test" in mutation or "assertion" in mutation:
-        required_text(mutation, "test", "pinned mutation check")
-        required_text(mutation, "assertion", "pinned mutation check")
+    final_role = "architect" if pack == "four" else "cleaner"
+    final = by_role[final_role]
+    mutations = [("mutation", "unit")]
+    if pack == "four":
+        mutations.append(("example-mutation", "acceptance"))
+        acceptance = final["acceptance"]["command"]
+        if any(by_role[role]["acceptance"]["command"] != acceptance for role in ("coder", "refactorer")):
+            raise ValueError("all downstream roles must use the same acceptance command")
+    for name, baseline in mutations:
+        mutation = final[name]
+        if mutation["command"] != final[baseline]["command"]:
+            raise ValueError(f"{final_role} {baseline} and {name} checks must use the same command")
+        if "test" in mutation or "assertion" in mutation:
+            required_text(mutation, "test", "pinned mutation check")
+            required_text(mutation, "assertion", "pinned mutation check")
     return by_role
 
 
@@ -72,7 +95,7 @@ def git(project, *args, allowed=(0,), env=None, data=None):
     return result
 
 
-def worktree(project, branch, input_commit, commit, *, require_clean):
+def worktree(project, branch, input_commit, commit, *, require_clean, allow_same_tree=False):
     root = Path(os.fsdecode(git(project, "rev-parse", "--show-toplevel").stdout).rstrip("\n"))
     if root != project:
         raise ValueError("project must be the root of the assigned Git worktree")
@@ -90,7 +113,7 @@ def worktree(project, branch, input_commit, commit, *, require_clean):
                     "--ignore-submodules=none").stdout
         if dirty:
             raise ValueError("assigned worktree has uncommitted changes")
-        if input_commit != commit:
+        if input_commit != commit and not allow_same_tree:
             input_tree, output_tree = git(
                 project, "rev-parse", f"{input_commit}^{{tree}}", f"{commit}^{{tree}}",
             ).stdout.splitlines()
@@ -144,7 +167,7 @@ def archived_path(store, data):
     return str(destination.relative_to(store))
 
 
-def replay_patch(project, commit, patch):
+def replay_patch(project, commit, patch, *, example_path=None):
     """Apply the patch to a temporary index and object directory for this exact commit."""
     object_path = git(project, "rev-parse", "--git-path", "objects").stdout.rstrip(b"\n")
     common_objects = project / Path(os.fsdecode(object_path))
@@ -157,15 +180,31 @@ def replay_patch(project, commit, patch):
             env = {"GIT_INDEX_FILE": str(scratch / "index"), "GIT_OBJECT_DIRECTORY": str(objects)}
             git(project, "read-tree", commit, env=env)
             git(project, "apply", "--cached", "--whitespace=nowarn", "-", env=env, data=patch)
-            changed = git(project, "diff", "--cached", "--name-only", "--no-ext-diff", "-z",
-                          commit, env=env).stdout
+            args = ("diff", "--cached", "--no-renames", "--no-ext-diff", "-z")
+            changed = git(project, *args, "--name-only", commit, env=env).stdout
+            names = {os.fsdecode(name) for name in changed.split(b"\0") if name}
+            data = None
+            if example_path is not None and names == {example_path}:
+                modes = git(project, *args, "--summary", commit, env=env).stdout
+                if not modes:
+                    data = git(project, "cat-file", "blob", f":0:{example_path}", env=env).stdout
     except (OSError, ValueError) as exc:
         raise ValueError(f"mutation patch cannot be replayed against receipt commit: {exc}") from exc
-    if not changed:
+    if not names:
         raise ValueError("mutation patch must change the receipt commit")
+    if example_path is not None:
+        if data is None:
+            raise ValueError("example mutation must edit only the approved specification file without changing its mode")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("example mutation must leave UTF-8 text") from exc
+        if any(not char.isprintable() and char not in "\n\r\t" for char in text):
+            raise ValueError("example mutation must leave UTF-8 text")
+    return names
 
 
-def mutation_proof(project, commit, mutation, pinned, green, red, patch):
+def mutation_proof(project, commit, mutation, pinned, green, red, patch, *, example_path=None):
     test = required_text(mutation, "test", "mutation check")
     assertion = required_text(mutation, "assertion", "mutation check")
     for key, value in (("test", test), ("assertion", assertion)):
@@ -190,15 +229,16 @@ def mutation_proof(project, commit, mutation, pinned, green, red, patch):
     assertion_line = re.search(r"^AssertionError(?::[ \t]*|[ \r]*$)", trace, re.M)
     if not assertion_line or assertion not in trace[assertion_line.end():].split("\n\n", 1)[0]:
         raise ValueError(f"mutation log must show {test} failed with the declared assertion")
-    replay_patch(project, commit, patch)
+    return replay_patch(project, commit, patch, example_path=example_path)
 
 
 def validate(project: Path, branch: str, input_commit: str, role: str, status: str,
-             payload: dict, store: Path, checks: dict) -> None:
+             payload: dict, store: Path, checks: dict, *, pack="two", spec_path=None) -> None:
     """Validate a receipt and add durable snapshot locations to its evidence records."""
-    if role not in STATUSES or status not in STATUSES[role]:
+    statuses = FOUR_STATUSES if pack == "four" else STATUSES
+    if role not in statuses or status not in statuses[role]:
         raise ValueError(f"invalid {role} receipt status {status}")
-    pinned = validate_checks(checks)[role]
+    pinned = validate_checks(checks, pack=pack)[role]
     if not isinstance(payload, dict):
         raise ValueError("receipt must be an object")
     if not COMMIT.fullmatch(input_commit) or payload.get("input_commit") != input_commit:
@@ -217,7 +257,8 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
     except (OSError, RuntimeError) as exc:
         raise ValueError(f"cannot access the project or evidence store: {exc}") from exc
     require_clean = status not in {"blocked", "paused"}
-    worktree(project, branch, input_commit, commit, require_clean=require_clean)
+    worktree(project, branch, input_commit, commit, require_clean=require_clean,
+             allow_same_tree=(pack == "four" and status == "superseded"))
 
     rows = payload.get("checks")
     if not isinstance(rows, list):
@@ -255,14 +296,23 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
             if reported[name]["exit_code"] != check["exit_code"]:
                 raise ValueError(f"check {name} must exit with code {check['exit_code']}")
     else:
-        validate_failure(status, payload.get("failure"), pinned, reported)
+        validate_failure(status, payload.get("failure"), pinned, reported, pack=pack)
 
-    mutation = reported.get("mutation")
-    if mutation is not None and (status == "pass" or "patch" in mutation):
-        patch = evidence_bytes(store, project, mutation, "patch", "mutation check")
+    mutation_checks = [("mutation", "unit")]
+    if pack == "four" and role == "architect":
+        mutation_checks.append(("example-mutation", "acceptance"))
         if status == "pass":
-            mutation_proof(project, commit, mutation, pinned["mutation"], logs["unit"],
-                           logs["mutation"], patch)
+            required_text(payload, "architecture", "Architect receipt")
+    for name, baseline in mutation_checks:
+        mutation = reported.get(name)
+        if mutation is None or (status != "pass" and "patch" not in mutation):
+            continue
+        patch = evidence_bytes(store, project, mutation, "patch", f"{name} check")
+        if status == "pass":
+            changed = mutation_proof(project, commit, mutation, pinned[name], logs[baseline], logs[name], patch,
+                                     example_path=spec_path if name == "example-mutation" else None)
+            if name == "mutation" and spec_path in changed:
+                raise ValueError("code mutation must leave the approved specification intact")
         else:
             replay_patch(project, commit, patch)
         evidence.append((mutation, "patch_snapshot", patch))
@@ -283,14 +333,15 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         record[key] = snapshot
 
 
-def validate_failure(status, failure, pinned, reported):
+def validate_failure(status, failure, pinned, reported, *, pack="two"):
     if not isinstance(failure, dict):
         raise ValueError(f"{status} receipt requires failure details")
-    if status in {"blocked", "paused"}:
+    if status in {"blocked", "paused", "superseded"}:
         required_text(failure, "reason", status)
         return
     name = required_text(failure, "check", "failure")
     for key in ("input", "expected", "actual"):
         required_text(failure, key, "failure")
-    if name not in reported or name == "mutation" or reported[name]["exit_code"] == pinned[name]["exit_code"]:
+    if (name not in reported or (pack == "two" and name == "mutation")
+            or reported[name]["exit_code"] == pinned[name]["exit_code"]):
         raise ValueError("failure must reference a pinned check with an unexpected exit code")

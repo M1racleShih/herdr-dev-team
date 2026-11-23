@@ -27,7 +27,7 @@ Use the project's existing activation mode. Refresh or restart the Leader sessio
 
 ## Handoffs and acceptance
 
-The [skill](skills/herdr-dev-team/SKILL.md) defines the workflow. [Role setup](skills/herdr-dev-team/references/roles.md) covers Ponytail and the briefs; the [handoff guide](skills/herdr-dev-team/references/handoffs.md) covers the state helper and crash recovery. Normal delivery runs without polling or a background service. If a notification is lost while the Leader is offline, recovery starts the next time the run is opened.
+The [skill](skills/herdr-dev-team/SKILL.md) defines the workflow. [Role setup](skills/herdr-dev-team/references/roles.md) covers Ponytail and the briefs; the [handoff guide](skills/herdr-dev-team/references/handoffs.md) covers the state helper and crash recovery. For a target that needs human-approved executable examples before coding, use the [four-pack workflow](skills/herdr-dev-team/references/four-pack.md). Normal delivery runs without polling or a background service. If a notification is lost while the Leader is offline, recovery starts the next time the run is opened.
 
 Run the regression suite from the repository root:
 

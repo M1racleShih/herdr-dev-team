@@ -1,6 +1,6 @@
 ---
 name: herdr-dev-team
-description: Run a Herdr two-pack with a Coder and Cleaner, or coordinate a legacy Coder and Reviewer handoff through Core or App.
+description: Run a Herdr two-pack, a four-pack with human-approved executable examples, or a legacy Coder and Reviewer handoff.
 metadata:
   version: "0.1.1"
 ---
@@ -12,6 +12,8 @@ Use this workflow in a live, interactive Leader terminal that can receive Herdr 
 ## Agree on the run
 
 For a two-pack target, use a dedicated local branch and worktree. Freeze the Markdown task card, project checks and two separate interactive worker addresses in the project SQLite store. Coder owns the behavior and tests. Cleaner independently checks the commit and can change code and tests to improve quality. An accepted report dispatches the next role automatically. Inspect the record with `resume` and use `recover` explicitly after interruption. See [two-pack commands and receipt format](references/handoffs.md#run-a-two-pack). The approved target and checks govern the run. Leave the merge and push decision to the user.
+
+For a four-pack, confirm separate Specifier, Coder, Refactorer and Architect terminals. Start with Specifier, show the human the committed examples, then relay only their approval of that exact version. Architect verifies the final commit and both targeted mutations. See the [four-pack commands and evidence format](references/four-pack.md).
 
 The remaining configuration and Leader-driven steps below apply to the legacy Coder/Reviewer workflow.
 
