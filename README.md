@@ -59,6 +59,8 @@ Give the Leader a target, a pack and the behavior you expect. For example:
 
 For four-pack and six-pack, the Specifier submits the examples for your approval before the Coder starts. Each role reports its checked commit and evidence. Use `resume` to inspect a run and `recover` to resolve the next handoff after an interruption. Ordinary handoffs can proceed while the Lead is offline.
 
+Six-pack also accepts a project quality plan with `--plan FILE`. Projects choose their tools, define the criteria for each role and select the checks QA must verify on the final commit. Try the Rust historical-file reader from the repository root with `python3 -B tests/try_quality_reader.py`. [Quality plan setup and recovery](skills/herdr-dev-team/references/six-pack.md#use-a-project-quality-plan)
+
 The [legacy Coder/Reviewer workflow](skills/herdr-dev-team/references/handoffs.md#prepare-a-legacy-statejson-run) is also available. Its default Pi setup uses `gpt-6.2-sol` at medium thinking for the Coder and high for the Reviewer. The Coder uses Ponytail full, and the Leader handles final QA with up to five review rounds. Visible mode keeps the Leader's focus and opens a separate `Development` tab with the Coder on the left and Reviewer on the right. Background mode uses Herdr Core. See the [role setup](skills/herdr-dev-team/references/roles.md) and [layout instructions](skills/herdr-dev-team/references/handoffs.md#launch-the-workers).
 
 ## Regression tests
