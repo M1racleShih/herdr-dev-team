@@ -2,7 +2,7 @@
 name: herdr-dev-team
 description: Run a Herdr engineering pack with two roles, four roles and approved examples, or six roles and independent user-entry QA. Also supports legacy Coder/Reviewer handoffs.
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Lead a Herdr development team
@@ -15,7 +15,7 @@ For a two-pack target, use a dedicated local branch and worktree. Freeze the Mar
 
 For a four-pack, confirm separate Specifier, Coder, Refactorer and Architect terminals. Start with Specifier, show the human the committed examples, then relay only their approval of that exact version. Architect verifies the final commit and both targeted mutations. See the [four-pack commands and evidence format](references/four-pack.md).
 
-For a six-pack, confirm six distinct worker terminals. Specifier submits behavior examples and user-entry steps together for human approval. After Coder, Cleaner, Architect and Hardener finish, QA independently runs the approved steps. QA can fix a localized defect and replay the original check, return broader defects to Coder, or pause for clarification. See [six-pack setup, receipts and replay](references/six-pack.md).
+For a six-pack, confirm six distinct worker terminals. Use `--plan FILE` when the project defines its own checks and criteria. Specifier submits behavior examples and user-entry steps together for human approval. After Coder, Cleaner, Architect and Hardener finish, QA independently runs the approved steps. QA can fix a localized defect and replay the original check, return broader defects to Coder, or pause for clarification. See [six-pack setup, receipts and replay](references/six-pack.md).
 
 The remaining configuration and Leader-driven steps below apply to the legacy Coder/Reviewer workflow.
 

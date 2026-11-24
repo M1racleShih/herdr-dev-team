@@ -147,8 +147,10 @@ class QualityPlanTest(unittest.TestCase):
         return response["execution_id"]
 
     def payload(self, spec, source, ids=(), *, plan_version=1, **extra):
-        return dict(input_commit=source, commit=self.head(), specification=self.specification_id(spec),
-                    issues="", checks=[], quality=dict(plan_version=plan_version, executions=list(ids))) | extra
+        payload = dict(input_commit=source, commit=self.head(), specification=self.specification_id(spec),
+                       issues="", checks=[], quality=dict(plan_version=plan_version, executions=list(ids)))
+        payload.update(extra)
+        return payload
 
     def send_done(self, run, spec, role, number, source, ids=(), *, plan_version=1, code=0):
         extra = {"architecture": "File decoding is separated from argument parsing."} if role == "architect" else {}
