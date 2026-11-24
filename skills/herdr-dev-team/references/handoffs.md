@@ -2,6 +2,10 @@
 
 The Delivery Lead and workers use interactive terminals on the same Herdr Core and share a filesystem. Each worker needs a distinct Core terminal ID and access to the dedicated Git worktree and private project store. The helper delivers assignments and receipts to the recorded terminal IDs with `hc send --json`.
 
+## Run a two-pack
+
+For a two-pack assignment, use the [commands and JSON receipt format](two-pack.md#submit-evidence).
+
 ## Launch the workers
 
 Run `hc --skill` and, for a visible run, `herdr-app --skill` for the installed versions. Use the provider, model and thinking level selected for each role. Start one interactive Pi process per worker with a unique `hc` name. When Core cannot find a Node-managed Pi, pass the resolved absolute paths to Node and the Pi entry point in place of `pi`.
@@ -31,6 +35,8 @@ Run `hc --skill` and, for a visible run, `herdr-app --skill` for the installed v
 ### Background in Core
 
 Use the same `hc run --bg --json --no-parent` command with the layout labels omitted. Check each worker's returned ID and Pi readiness in Core. For either layout, if a launch response is lost, find the original terminal by its unique name before retrying.
+
+Workers launched with `--no-parent` send their pack receipts to the recorded Lead. To check a worker that has not reported, run `hc get TERMINAL_ID` and `hc read TERMINAL_ID`, then inspect the pack with `resume` before taking a recovery action.
 
 ### Set up Ponytail for the six-pack Coder
 

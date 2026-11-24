@@ -29,7 +29,7 @@ Activate the skill for the project.
 dskills plug --project . herdr-dev-team
 ```
 
-You can also place [the skill directory](skills/herdr-dev-team) or a symlink in your agent's skill discovery path. Refresh or restart the Leader session if it has already loaded its skill catalog.
+To use the pack-only helper from this checkout, place [its skill directory](skills/herdr-dev-team) or a symlink in your agent's skill discovery path. Refresh or restart the Leader session if it has already loaded its skill catalog.
 
 ### Upgrade from an earlier release
 
