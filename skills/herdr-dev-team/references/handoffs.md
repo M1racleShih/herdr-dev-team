@@ -40,4 +40,4 @@ Workers launched with `--no-parent` send their pack receipts to the recorded Lea
 
 ### Set up Ponytail for the six-pack Coder
 
-Use the Coder's project or user skill path if Pi already discovers Ponytail. For a dskills-managed project, `dskills --json status --project "$WORKTREE"` shows the pin and link. If a launch needs an explicit skill, verify `SKILL.md` in the pinned copy under the local dskills pool's `objects/<digest>` directory and append `--skill "$PONYTAIL"` with its absolute path to the Coder's Pi arguments. Confirm Pi loaded it and use Ponytail full for the Coder assignment.
+The six-pack Coder follows the project's coding conventions. Ponytail is an optional coding skill. If the user or project explicitly selects it, use the copy Pi discovers in the project's or user's skill directory, or append `--skill "$PONYTAIL"` to the Coder's Pi arguments, with `PONYTAIL` set to the absolute path of its `SKILL.md`. Confirm Pi loaded the selected skill and apply the settings requested for this run.

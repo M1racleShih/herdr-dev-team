@@ -2,7 +2,7 @@
 name: herdr-dev-team
 description: Run a Herdr engineering pack with two roles, four roles and approved examples, or six roles and independent user-entry QA.
 metadata:
-  version: "0.5.0"
+  version: "0.5.1"
 ---
 
 # Lead a Herdr development team

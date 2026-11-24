@@ -4,7 +4,7 @@ Use the check IDs, scope, criteria and commands in your assignment. Work from it
 
 | Worker | Work to deliver |
 | --- | --- |
-| Coder | Apply [Ponytail full](handoffs.md#set-up-ponytail-for-the-six-pack-coder). Implement the approved behavior. The check named by `approved_examples_check` must actually exercise the approved examples. Reproduce any prior failure on the supplied commit, using the archived evidence and diagnosis. |
+| Coder | Follow the project's coding conventions. Use additional coding skills only when the user or project explicitly selects them. Implement the approved behavior. The check named by `approved_examples_check` must actually exercise the approved examples. Reproduce any prior failure on the supplied commit, using the archived evidence and diagnosis. |
 | Cleaner | Review and simplify the changed area. Report the results of any observations you make. An unrun observation is recorded as untested. |
 | Architect | Trace the relevant module and dependency boundaries. In `architecture`, identify the reviewer and explain the findings, rationale and verification scope. |
 | Hardener | Use the method named by `hardening_check` to verify the candidate independently. Attach the project tool's native evidence through its adapter. |
