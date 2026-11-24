@@ -1,8 +1,10 @@
 # Operate a four-pack
 
-Run `handoff.py` from the installed skill. Give the Delivery Lead and four workers distinct interactive terminals on the same Herdr Core. The workers share a dedicated branch and worktree. Coordinate edits with the worker who holds the assignment. Keep the owner-only `STORE` outside the worktree. Both packs use the project's existing `two-pack.sqlite3`. No workflow step merges or pushes; the user decides what to do with the accepted commit.
+Run `handoff.py` from the installed skill. Give the Delivery Lead and four workers distinct interactive terminals on the same Herdr Core. The workers share a dedicated branch and worktree. Coordinate edits with the worker who holds the assignment. Keep the owner-only `STORE` outside the worktree. All packs use the project's existing `two-pack.sqlite3`. No workflow step merges or pushes; the user decides what to do with the accepted commit.
 
 ## Set up and start
+
+Use the [worker launch instructions](handoffs.md#launch-the-workers) for Pi and verify each terminal address.
 
 Write a UTF-8 Markdown `CARD` with the scope, baseline, acceptance checks and applicable dependency rules. At init, choose the project-relative `EXAMPLES` path. Specifier commits a regular UTF-8 file there. A named acceptance test must read its expectations from that file at run time and compare them with actual implementation output. For Python, pin the project's unittest command with verbose output so each case is identifiable.
 
