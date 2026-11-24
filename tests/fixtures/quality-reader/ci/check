@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Project adapters for the dependency-free Rust reader acceptance fixture."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+DIRECTORY = Path(os.environ["HERDR_CHECK_DIR"]).resolve()
+RESULT = Path(os.environ["HERDR_CHECK_RESULT"])
+RUST_TEST = "decimal_fraction_is_preserved"
+PYTHON_TEST = "test_python_reader.ReaderTest.test_decimal_fraction_is_preserved"
+
+
+def command(args, log, cwd=None):
+    process = subprocess.run([str(arg) for arg in args], cwd=cwd, capture_output=True,
+                             text=True, timeout=15)
+    (DIRECTORY / log).write_text(
+        f"{args!r}\nexit {process.returncode}\n{process.stdout}{process.stderr}", encoding="utf-8")
+    return process
+
+
+def write_json(path, payload):
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def observations(rows):
+    """Use a native binary to read each file. Require the full declared scope."""
+    if (not isinstance(rows, list) or not rows
+            or any(type(row.get("cents")) is not int or not isinstance(row.get("file"), str) for row in rows)
+            or len({row["file"] for row in rows}) != len(rows)):
+        raise ValueError("sample manifest is empty or invalid")
+    executable = DIRECTORY / "native-probe"
+    build = command(["rustc", "--edition=2021", "reader/native_probe.rs", "-o", str(executable)],
+                    "build.log")
+    if build.returncode:
+        raise ValueError("native Rust build failed")
+    native = command([executable, *(row["file"] for row in rows)], "native.log")
+    if native.returncode:
+        raise ValueError("native reader failed to execute every sample")
+    actual = [(file, int(cents)) for file, cents in
+              (line.split("\t") for line in native.stdout.splitlines())]
+    if [file for file, _ in actual] != [row["file"] for row in rows]:
+        raise ValueError("native report is missing or duplicates samples")
+    return [dict(file=file, expected_cents=row["cents"], actual_cents=cents)
+            for row, (file, cents) in zip(rows, actual)]
+
+
+def compare(rows):
+    results = observations(rows)
+    write_json(DIRECTORY / "native-report.json", results)
+    mismatches = [row for row in results if row["expected_cents"] != row["actual_cents"]]
+    if mismatches:
+        summary = ", ".join(f"{row['file']} expected {row['expected_cents']} cents, read {row['actual_cents']}"
+                            for row in mismatches)
+        return "fail", summary, ["native-report.json", "build.log", "native.log"]
+    return "pass", f"All {len(results)} samples decoded to their expected amounts", [
+        "native-report.json", "build.log", "native.log"]
+
+
+def manifest_rows(manifest, *, historical):
+    rows = json.loads(manifest.read_text(encoding="utf-8"))
+    if historical and (len(rows) != 2 or {row["file"] for row in rows} != {"v1-integer.bin", "v1-decimal.bin"}
+                       or any(type(row["cents"]) is not int for row in rows)):
+        raise ValueError("historical manifest must include both v1 samples")
+    return [dict(row, file=str(manifest.parent / row["file"])) for row in rows]
+
+
+def compatibility_via_cli(manifest):
+    """Use the public binary in place of the native batch probe."""
+    rows = manifest_rows(manifest, historical=True)
+    reader = DIRECTORY / "public-reader"
+    build = command(["rustc", "--edition=2021", "reader/main.rs", "-o", reader], "public-build.log")
+    if build.returncode:
+        raise ValueError("public Rust reader build failed")
+    reports = []
+    for index, row in enumerate(rows, start=1):
+        log = f"public-sample-{index}.log"
+        sample = command([reader, row["file"]], log)
+        if sample.returncode or sample.stderr or len(sample.stdout.splitlines()) != 1:
+            raise ValueError(f"public Rust reader failed to print the amount for {row['file']}")
+        reports.append((row["file"], row["cents"], int(sample.stdout)))
+    report = "file\texpected\tobserved\n" + "".join(f"{file}\t{expected}\t{actual}\n"
+                                                   for file, expected, actual in reports)
+    (DIRECTORY / "public-reader.tsv").write_text(report, encoding="utf-8")
+    artifacts = ["public-reader.tsv", "public-build.log", "public-sample-1.log", "public-sample-2.log"]
+    if any(expected != actual for _, expected, actual in reports):
+        return "fail", "The public Rust reader produced a different historical amount", artifacts
+    return "pass", "The public Rust reader returned both historical amounts", artifacts
+
+
+def approved_examples():
+    approved = Path(os.environ["HERDR_APPROVED_SPEC"])
+    rows = json.loads(approved.read_text(encoding="utf-8"))["examples"]
+    result, summary, _ = compare(rows)
+    # Exit-protocol evidence includes stdout. Keep the native observations there.
+    print((DIRECTORY / "native-report.json").read_text(encoding="utf-8").rstrip())
+    print(summary)
+    return int(result == "fail")
+
+
+def risk():
+    report = json.loads(Path("fixtures/risk.json").read_text(encoding="utf-8"))
+    write_json(DIRECTORY / "crap-report.json", report)
+    artifacts = ["crap-report.json"]
+    if report.get("crap") is None:
+        return "inconclusive", "Fixed CRAP fixture is missing coverage data", artifacts
+    if report["crap"] > report["threshold"]:
+        return "fail", f"Fixed CRAP fixture score {report['crap']} exceeds {report['threshold']}", artifacts
+    return "pass", "Fixed CRAP fixture score is within its threshold", artifacts
+
+
+def raw_mutation(language, mode):
+    """Return evidence only for the exact test and expected assertion."""
+    rust = language == "rust"
+    source = Path("reader/lib.rs" if rust else "reader/test_python_reader.py")
+    trial = DIRECTORY / "mutation-trial"
+    trial.mkdir()
+    original = source.read_text(encoding="utf-8")
+    target = trial / source.name
+    target.write_text(original, encoding="utf-8")
+    test, noun = (RUST_TEST, "rust") if rust else (PYTHON_TEST, "python")
+
+    def invoke(name):
+        if rust:
+            executable = trial / "mutation-test"
+            build = command(["rustc", "--edition=2021", "--test", target, "-o", executable],
+                            f"{name}-build.log")
+            if build.returncode:
+                return None
+            return command([executable, "--exact", test, "--nocapture"], f"{name}.log")
+        return command([sys.executable, "-B", "-m", "unittest", "-v", test], f"{name}.log", cwd=trial)
+
+    baseline = invoke("original")
+    baseline_marker = f"test {test} ... ok" if rust else f"({test}) ... ok"
+    if baseline is None or baseline.returncode != 0 or baseline_marker not in baseline.stdout + baseline.stderr:
+        return "inconclusive", f"The original {noun} test did not pass", []
+
+    old = "cents.checked_add(fraction)" if rust else "100 + int(fraction)"
+    new = "cents.checked_add(0)" if rust else "100 + 0"
+    if original.count(old) != 1:
+        raise ValueError("targeted source expression is missing or duplicated")
+    if mode == "survives":
+        new = "cents.checked_add(fraction + 0)" if rust else "100 + int(fraction) + 0"
+    elif mode == "compile-error":
+        new = "invalid_rust_code!()" if rust else "100 + ("
+    mutant = original.replace(old, new)
+    if mode == "wrong-assertion":
+        mutant = mutant.replace("decimal fraction is preserved", "a different assertion")
+    if mode == "zero-tests":
+        if rust:
+            mutant = mutant.replace("#[test]\n", "")
+        else:
+            mutant += "\nReaderTest.test_decimal_fraction_is_preserved = unittest.TestSuite()\n"
+    target.write_text(mutant, encoding="utf-8")
+    patch = subprocess.run(["diff", "-u", "--label", f"a/{source}", "--label", f"b/{source}", source, target],
+                           capture_output=True, text=True, timeout=5)
+    if patch.returncode != 1:
+        raise ValueError("the replacement patch is missing")
+    (DIRECTORY / "mutation.patch").write_text(patch.stdout, encoding="utf-8")
+    modified = invoke("mutant")
+    logs = [name for name in ("original-build.log", "original.log", "mutation.patch",
+                              "mutant-build.log", "mutant.log") if (DIRECTORY / name).is_file()]
+    if modified is None:
+        return "inconclusive", f"The targeted {noun} mutant did not build", logs
+    combined = modified.stdout + modified.stderr
+    if modified.returncode == 0 and baseline_marker in combined:
+        return "fail", f"The targeted {noun} mutant survived the exact test", logs
+    killed = (rust and modified.returncode == 101 and f"test {test} ... FAILED" in combined
+              and "decimal fraction is preserved" in combined and "left: Ok(1200)" in combined
+              and "right: Ok(1234)" in combined) or (
+        not rust and modified.returncode == 1 and f"({test}) ... FAIL" in combined
+        and "AssertionError: 1200 != 1234 : decimal fraction is preserved" in combined)
+    if not killed:
+        return "inconclusive", f"The exact {noun} test did not fail with the expected assertion", logs
+    return "pass", f"The exact {noun} test caught the targeted decimal regression", logs
+
+
+def main(args):
+    action, *options = args
+    try:
+        if action == "behavior":
+            return approved_examples()
+        if action in {"compat", "archive"}:
+            outcome, summary, artifacts = compare(manifest_rows(Path(*options), historical=action == "compat"))
+        elif action == "compat-alt":
+            outcome, summary, artifacts = compatibility_via_cli(Path(*options))
+        elif action == "risk":
+            outcome, summary, artifacts = risk()
+        elif action == "mutation":
+            outcome, summary, artifacts = raw_mutation(*options)
+        else:
+            raise ValueError(f"unknown fixture action {action}")
+    except (OSError, ValueError, KeyError, AttributeError, subprocess.TimeoutExpired) as error:
+        if action == "behavior":
+            print(error, file=sys.stderr)
+            return 2
+        outcome, summary = "inconclusive", str(error)
+        artifacts = sorted(path.name for path in DIRECTORY.glob("*.log"))
+    write_json(RESULT, dict(outcome=outcome, summary=summary, tool=f"reader-fixture {action} 1.0",
+                            configuration=" ".join(args), artifacts=artifacts))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

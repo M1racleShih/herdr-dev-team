@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+
+with TemporaryDirectory(prefix="quality-reader-cli-") as scratch:
+    executable = Path(scratch) / "reader"
+    subprocess.run(["rustc", "--edition=2021", "reader/main.rs",
+                    "-o", str(executable)], check=True, timeout=15)
+    result = subprocess.run([str(executable), *sys.argv[1:]], timeout=5)
+    raise SystemExit(result.returncode)

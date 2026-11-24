@@ -11,6 +11,9 @@ import sqlite3
 import uuid
 
 import four_pack
+import quality_exec
+import quality_revise
+import quality_store
 from pack_evidence import SIX_STATUSES, validate_checks
 from pack_store import (
     SCHEMA, accepted_receipt, assignment_id, assignment_key, attempt_view, check_dispatch_project,
@@ -53,11 +56,18 @@ def initialize(store, args, identity, pack):
     for value in (str(store), str(project), branch):
         guard_message(value)
     body = guard_message(read_text(args.card))
-    checks = read_checks(args.checks, pack)
+    plan = quality_store.read_plan(args.plan) if getattr(args, "plan", None) else None
+    if plan:
+        checks = {role: [] for role in workers}
+        checks["qa"] = [{"name": "user-entry", "command": plan["qa_command"], "exit_code": 0}]
+    else:
+        checks = read_checks(args.checks, pack)
     references = Path(__file__).resolve().parent.parent / "references"
     role_cards = {}
     for role in workers:
         path = references / f"{pack}-{role}.md"
+        if plan and role != "specifier":
+            path = references / "six-plan-roles.md"
         role_cards[role] = {"path": str(path), "body": guard_message(read_text(path))}
     run_id = uuid.uuid4().hex
     timestamp = now()
@@ -65,6 +75,8 @@ def initialize(store, args, identity, pack):
         schema = SCHEMA + (four_pack.SCHEMA if examples else "")
         if pack == "six":
             schema += four_pack.SIX_SCHEMA
+        if plan:
+            schema += quality_store.SCHEMA
         db.executescript(schema)
         with transaction(db):
             existing = db.execute("SELECT project_id FROM runs LIMIT 1").fetchone()
@@ -79,8 +91,13 @@ def initialize(store, args, identity, pack):
             if pack == "six":
                 db.execute("INSERT INTO six_runs VALUES (?)", (run_id,))
             insert_card(db, run_id, 1, body, encode(checks), "initial task card supplied at init")
-    return {"id": run_id, "run": run_id, "directory": str(store), "database": str(store / "two-pack.sqlite3"),
-            "phase": "ready", "branch": branch, "baseline": baseline, "card_version": 1}, 0
+            if plan:
+                quality_store.insert_initial_plan(db, run_id, plan)
+    result = {"id": run_id, "run": run_id, "directory": str(store), "database": str(store / "two-pack.sqlite3"),
+              "phase": "ready", "branch": branch, "baseline": baseline, "card_version": 1}
+    if plan:
+        result["plan_version"] = 1
+    return result, 0
 
 
 def resume_summary(view):
@@ -126,7 +143,7 @@ def resume_summary(view):
     return f"{prefix}给 {role} 的派工送达待核实。"
 
 
-def resume(db, run):
+def resume(db, store, run):
     view = {key: run[key] for key in ("id", "project", "project_id", "branch", "baseline",
             "pack_version", "leader", "rounds", "phase", "current", "card_version", "created_at", "updated_at")}
     pack = run["pack"]
@@ -158,6 +175,8 @@ def resume(db, run):
             entry["decision"] = json.loads(item["decision"])
         view["assignments"][assignment_key(item["role"], item["round"])] = entry
     view["summary"] = four_pack.resume(db, run, view) if pack != "two" else resume_summary(view)
+    if pack == "six":
+        quality_exec.resume(db, store, run, view)
     return view, 0
 
 
@@ -169,6 +188,20 @@ def assignment_message(db, store, run, item, number):
     command = ["python3", str(Path(__file__).resolve().with_name("handoff.py")), str(store),
                pack, run["id"], "report", role, str(item["round"])]
     context = four_pack.assignment_context(db, run, item, checks) if pack != "two" else ""
+    frozen = f"Frozen checks: {encode(checks[role])}"
+    assigned = quality_store.assignment_plan(db, item) if pack == "six" else None
+    if assigned:
+        plan = assigned["plan"]
+        definitions = [entry for entry in plan["checks"] if entry["owner"] == role
+                       or (role == "qa" and entry["use"] == "final")]
+        check_cmd = [*command[:-3], "check", role, str(item["round"])]
+        frozen = (f"Quality plan version {assigned['plan_version']}. Assigned checks: {encode(definitions)}\n"
+                  f"Approved examples check: {plan['approved_examples_check']}. "
+                  f"Hardening check: {plan['hardening_check']}.\n")
+        if role != "specifier":
+            frozen += f"Run each required check with: {shlex.join(check_cmd)} ID --key KEY\n"
+        if role == "qa":
+            frozen += f"Independent user-entry command: {plan['qa_command']}\n"
     source = ""
     if item["source_receipt"] is not None:
         prior = db.execute("SELECT status, payload FROM receipts WHERE id = ?",
@@ -181,7 +214,7 @@ def assignment_message(db, store, run, item, number):
         f"Branch: {run['branch']}. Baseline: {run['baseline']}. Input commit: {item['input_commit']}.\n"
         f"Private evidence directory: {store}.\n\n"
         f"Task card (version {card['version']}):\n{card['body']}\n"
-        f"Frozen checks: {encode(checks[role])}\n{context}{source}\n"
+        f"{frozen}\n{context}{source}\n"
         f"Role instructions ({role_card['path']}):\n{role_card['body']}\n"
         f"Report with: {shlex.join(command)} STATUS --result RESULT_FILE\n"
         f"Use one of {', '.join(roles(pack)[role])} for STATUS and a UTF-8 JSON file for RESULT_FILE."
@@ -221,6 +254,10 @@ def dispatch(db, store, run, item_id, send, *, recover=False, inspection=None):
                         or latest["number"] != inspection["attempt"]):
                     raise ValueError("that send attempt no longer needs reconciliation")
                 delivered = inspection["decision"] == "delivered"
+                if (not delivered and run["pack"] == "six" and quality_store.assignment_plan(db, item)
+                        and db.execute("SELECT 1 FROM quality_executions WHERE assignment_id = ? LIMIT 1",
+                                       (item_id,)).fetchone()):
+                    raise ValueError("the worker already invoked a project check; reconcile the delivery as delivered")
                 decision = "delivered-by-inspection" if delivered else "not-delivered-by-inspection"
                 db.execute("UPDATE attempts SET status = ?, inspection = ?, inspected_at = ? "
                            "WHERE assignment_id = ? AND number = ?",
@@ -340,6 +377,9 @@ def report(db, store, run, args, identity, send, validate):
             statuses = roles(pack)[args.role]
             if args.status not in statuses:
                 raise ValueError(f"invalid {args.role} status; use {', '.join(statuses)}")
+            if pack == "six" and quality_store.assignment_plan(db, item):
+                quality_exec.recover_interrupted(db, store, run)
+                quality_store.assert_no_active(db, run["id"])
             card = get_card(db, run["id"], item["card_version"])
             checks = json.loads(card["checks"])
             if pack != "two":
@@ -395,6 +435,8 @@ def notify(db, store, run, item, status, decision, receipt_id, send):
 
 def revise(db, store, run, args, send):
     pack = run["pack"]
+    if args.checks and pack == "six" and quality_store.get_plan(db, run["id"]):
+        raise ValueError("this run uses a quality plan; change checks with plan-revise")
     body = guard_message(read_text(args.card))
     new_checks = read_checks(args.checks, pack) if args.checks else None
     approval = nonempty(args.approve_evidence, "approval evidence") if args.approve_evidence is not None else None
@@ -456,7 +498,12 @@ def init_parser(pack):
     cli = argparse.ArgumentParser(prog=f"handoff.py STORE {pack} init")
     cli.add_argument("--project", required=True, type=Path)
     cli.add_argument("--card", required=True, type=Path)
-    cli.add_argument("--checks", required=True, type=Path)
+    if pack == "six":
+        mode = cli.add_mutually_exclusive_group(required=True)
+        mode.add_argument("--checks", type=Path, help="use the original six-pack check protocol")
+        mode.add_argument("--plan", type=Path, help="use a versioned project quality plan")
+    else:
+        cli.add_argument("--checks", required=True, type=Path)
     for role in roles(pack):
         cli.add_argument(f"--{role}", required=True, type=terminal)
     if pack != "two":
@@ -492,12 +539,27 @@ def run_parser(pack):
     revision.add_argument("--approve-evidence")
     if pack != "two":
         four_pack.attach_parser(commands, positive)
+    if pack == "six":
+        check = commands.add_parser("check", help="execute a project check on the candidate")
+        check.add_argument("role", choices=roles(pack))
+        check.add_argument("round", type=positive)
+        check.add_argument("check_id", nargs="?")
+        check.add_argument("--observe", type=Path, help="add a one-assignment observation")
+        check.add_argument("--key", required=True)
+        revise_plan = commands.add_parser("plan-revise", help="activate a revised project quality plan")
+        revise_plan.add_argument("--from", dest="base_version", type=positive, required=True)
+        revise_plan.add_argument("--plan", type=Path, required=True)
+        revise_plan.add_argument("--kind", choices=("tool", "policy"), required=True)
+        revise_plan.add_argument("--reason", required=True)
+        revise_plan.add_argument("--approval-evidence")
     return cli
 
 
 def specification_command(db, store, run, args, send):
     with transaction(db):
         run = get_run(db, run["id"])
+        if args.command == "recover" and run["pack"] == "six" and quality_store.get_plan(db, run["id"]):
+            quality_exec.recover_interrupted(db, store, run)
         if args.command == "approve":
             result, item_id = four_pack.approve(db, run, args.version, args.sha256, args.evidence)
             if item_id is None:
@@ -531,12 +593,23 @@ def main(store, argv, *, identity, send, validate, pack="two"):
         with closing(connect(store, read_only=args.command == "resume")) as db:
             if args.command == "resume":
                 with transaction(db, write=False):
-                    return resume(db, get_run(db, args.run_id, pack))
+                    return resume(db, store, get_run(db, args.run_id, pack))
             run = get_run(db, args.run_id, pack)
             check_location(store, Path(run["project"]))
             if args.command == "report":
                 return report(db, store, run, args, identity, send, validate)
+            if args.command == "check":
+                if bool(args.check_id) == bool(args.observe):
+                    raise ValueError("check requires either a check ID or --observe FILE")
+                return quality_exec.check(db, store, run, args.role, args.round, args.check_id,
+                                          args.key, identity, observe=args.observe), 0
             require_leader(run, identity)
+            if args.command == "plan-revise":
+                decision, item_id = quality_revise.activate(db, store, run, args, dispatch_lock)
+                if item_id:
+                    decision["dispatch"], code = dispatch(db, store, run, item_id, send)
+                    return decision, code
+                return decision, 0
             if args.command == "start":
                 return start(db, store, run, send)
             if args.command == "revise":

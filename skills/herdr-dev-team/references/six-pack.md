@@ -6,7 +6,7 @@ The Delivery Lead coordinates six distinct interactive workers on the same Herdr
 
 Use the [worker launch instructions](handoffs.md#launch-the-workers) for Pi and verify each terminal address. Prepare `CARD` with the scope, baseline, observable behavior and applicable dependency rules. Keep `STORE` owner-only and outside the worktree. Choose a project-relative `EXAMPLES` path and a private script destination for QA. QA writes that script when assigned.
 
-Pin check commands in `CHECKS`, a UTF-8 JSON object keyed by the role names below. Each role has an array of `{ "name": "…", "command": "…", "exit_code": 0 }` objects. Use `[]` for Specifier.
+Choose the check format at initialization. For project-defined commands and criteria, use [a quality plan](#use-a-project-quality-plan). For the original six-pack protocol, pin check commands in `CHECKS`, a UTF-8 JSON object keyed by the role names below. Each role has an array of `{ "name": "…", "command": "…", "exit_code": 0 }` objects. Use `[]` for Specifier.
 
 | Role | Required pinned checks |
 | --- | --- |
@@ -31,6 +31,103 @@ python3 "$HELPER" "$STORE" six "$RUN_ID" resume
 ```
 
 The assignment contains the frozen card, role brief, checks, exact input commit and report command. Workers coordinate worktree access through the active assignment.
+
+## Use a project quality plan
+
+Use `six init --plan "$PLAN"` in place of `--checks "$CHECKS"` in the command above. Supply the same six terminals, card, project and examples path. Run `start`, present Specifier's exact submission for human approval, and record that approval as described below.
+
+Here is a complete plan for the reader fixture. Replace the QA script location with the private path for this run. The project supplies the `ci/check` adapter and the criteria in this file.
+
+```json
+{
+  "schema": 1,
+  "approved_examples_check": "behavior",
+  "hardening_check": "old-format",
+  "qa_command": "python3 -B /tmp/my-private-store/user-entry.py",
+  "checks": [
+    {"id": "behavior", "owner": "coder", "use": "final",
+     "scope": ["reader", "behavior/examples.json"], "criterion": "Read each approved file and match its amount.",
+     "argv": ["./ci/check", "behavior"], "protocol": "exit", "fail_codes": [1]},
+    {"id": "risk", "owner": "cleaner", "use": "observe",
+     "scope": ["reader"], "criterion": "Show changed-function CRAP scores and missing coverage.",
+     "argv": ["./ci/check", "risk"], "protocol": "result"},
+    {"id": "old-format", "owner": "hardener", "use": "final",
+     "scope": ["reader", "fixtures/v1"], "criterion": "Read both v1 files and match both amounts in the manifest.",
+     "argv": ["./ci/check", "compat", "fixtures/v1/manifest.json"], "protocol": "result"}
+  ]
+}
+```
+
+The two top-level check IDs must identify a required Coder and Hardener check respectively. Each unique ID uses letters, digits, periods, underscores or hyphens. `user-entry` is reserved for independent QA. Supply nonempty scope, criterion and executable arguments. `timeout_seconds` optionally sets a positive integer timeout. Project adapters enforce the declared scope and criterion.
+
+| Use | Owner's handoff | Final QA |
+| --- | --- | --- |
+| `stage` | Requires a passing execution | Retains the accepted stage evidence |
+| `final` | Requires a passing execution | Requires a passing execution for the final commit under the current plan and approved specification |
+| `observe` | Records pass, fail, inconclusive or untested | Visible for review |
+
+### Execute a check and report the result
+
+On the owning worker's terminal, commit changes, then run the assigned check. The helper calls the exact argument vector in the clean candidate worktree. It sets `HERDR_CHECK_COMMIT`, `HERDR_APPROVED_SPEC` (absolute file path), `HERDR_CHECK_DIR` (private output directory for this invocation) and `HERDR_CHECK_RESULT` (adapter result path). Use the supplied directory or an ignored build directory for generated files.
+
+```sh
+python3 "$HELPER" "$STORE" six "$RUN_ID" check hardener 1 old-format --key compat-first
+python3 "$HELPER" "$STORE" six "$RUN_ID" report hardener 1 done --result "$STORE/hardener.json"
+```
+
+For `exit`, status zero passes. List the product-failure codes in `fail_codes` (integers 1–255). Any other nonzero status, signal, startup failure or timeout is inconclusive. For `result`, exit zero and write a JSON object such as the following to `HERDR_CHECK_RESULT`. Save the native files under `HERDR_CHECK_DIR`. The helper archives the files and captured output by SHA-256.
+
+```json
+{"outcome":"pass","summary":"Both v1 samples match the manifest","tool":"reader-compat 1.0",
+ "configuration":"fixtures/v1/manifest.json","artifacts":["native-report.json","build.log"]}
+```
+
+The adapter distinguishes a reproduced product failure (`fail`) from insufficient evidence (`inconclusive`). Pass and fail require at least one readable native artifact. An inconclusive result may have an empty artifacts array and a diagnostic summary. A check command that registers an outcome prints its execution ID, check, plan version and outcome. Read `outcome` to determine the verdict. An invocation error is reported on stderr.
+
+For a project receipt, use the actual commit, approved spec digest and execution IDs. A Hardener receipt has this shape.
+
+```json
+{"input_commit":"<assigned commit>","commit":"<checked commit>","issues":"","checks":[],
+ "specification":{"version":1,"sha256":"<approved sha256>"},
+ "quality":{"plan_version":1,"executions":["exec-7"]}}
+```
+
+Each worker cites the current assignment's executions. Architect describes the rationale, boundaries and findings in `architecture`. The accepted receipt identifies the reviewer by terminal. Missing or inconclusive required evidence keeps the current assignment open. A downstream worker can report `fail` with a required failed execution and `failure.check/input/expected/actual`. A blocker or pause carries `failure.reason`.
+
+QA still runs the [private user-entry harness](#qa-run-and-replay) and includes that check row, the real observations and the harness log. QA may run any final check using its frozen ID. At signoff the helper takes the latest execution by start order on this run, plan version, approved spec and commit. QA cites its own runs and can reuse passes from an accepted receipt of the owner. `resume` exposes the selected IDs at `quality.final.executions`. After a local repair, replay the archived entry script on the repaired commit and rerun every final check missing evidence there. When a final check fails even though the public entry passes, submit both the failed execution and the passing entry observation with `fail`. Coder and the downstream workers receive the evidence for rework.
+
+### Observe, revise and recover
+
+A worker can try an additional observation during its assignment. Supply one complete check definition with a fresh ID, matching owner and `use: "observe"`. The definition and source are retained for this assignment.
+
+```sh
+python3 "$HELPER" "$STORE" six "$RUN_ID" check cleaner 1 --observe "$OBSERVATION" --key trial-1
+```
+
+The recorded Lead can activate a revised plan before dispatch or while waiting for initial approval. During work, the current role first reports `paused` or `blocked`. Finish active executions and settle uncertain delivery. The replacement starts at the earliest affected owner or current role, whichever comes first. The clean candidate must be the paused or blocked commit or a descendant. Ordinary QA goes back through Coder when that candidate has moved beyond Hardener's verified commit.
+
+```sh
+python3 "$HELPER" "$STORE" six "$RUN_ID" plan-revise --from 1 --plan "$NEXT_PLAN" \
+  --kind tool --reason 'Use the replacement adapter with the same samples and criteria'
+python3 "$HELPER" "$STORE" six "$RUN_ID" plan-revise --from 2 --plan "$AUTHORIZED_PLAN" \
+  --kind policy --reason 'Apply the approved risk threshold' --approval-evidence "$PROJECT_AUTHORIZATION"
+```
+
+A tool revision changes the execution settings of one existing check. The Lead attests equivalence. Changes to samples, thresholds, scope, requirements or other semantics require project authorization even when implemented inside a tool. `qa_command` stays pinned throughout the run. For changes to external behavior, submit the new specification for human approval. An exact activation retry returns the saved decision. Use `recover` for a pending dispatch.
+
+`resume` reads the database without changing it. Inspect `quality.plan_versions`, `quality.executions` and each assignment's `quality_checks` for history, native evidence, pending checks and observations. Retry a check with the same key to retrieve its execution. After a runner interruption, wait for the original process to finish. The next check, report or Lead `recover` can then record the interrupted execution as inconclusive. A missing or replaced process lock is shown as `unknown` and requires inspection. Use a new key for a deliberate rerun. Reports and plan activation wait until outstanding executions have been resolved.
+
+### Try the Rust reader
+
+From the repository root, run the following with Python 3, Git and `rustc` on PATH. The trial creates an isolated worktree and private store. It compiles and runs the Rust reader, checks two historical files and runs a separate QA script against the public command. The harness supplies terminal identities, test approvals and simulated Herdr message delivery. The optional CRAP adapter reads a fixed report.
+
+```sh
+python3 -B tests/try_quality_reader.py
+# Repeat the acceptance scenarios in disposable stores.
+python3 -B -m unittest discover -s tests -p 'test_quality_plan.py' -v
+```
+
+The first command prints the accepted commit and a copyable `resume` command for the retained store.
 
 ## Approve the behavior and user steps
 
@@ -57,7 +154,7 @@ Approval records the first Coder assignment for that version. A repair under ide
 
 Run the report command from the assigned terminal. Use full Git commit IDs. Every result has `input_commit`, `commit`, an `issues` string and a `checks` array. Specifier's `done` uses `checks: []`. Every downstream result also includes `specification: { "version": 1, "sha256": "<approved full SHA-256>" }` with the assignment's version.
 
-Commit edits and run checks on clean `HEAD` from the project root. Check-only work keeps the input commit. Run each pinned command and record its actual exit status with a log stored outside the worktree, at an absolute path in `STORE` or relative to it.
+Commit edits and run checks on clean `HEAD` from the project root. Check-only work keeps the input commit. For a `--plan` run, use the [execution receipt](#execute-a-check-and-report-the-result). For a `--checks` run, execute each pinned command and record its actual exit status with a log stored outside the worktree, at an absolute path in `STORE` or relative to it.
 
 ```json
 {"name": "unit", "command": "python3 -B -m unittest -v test_target",

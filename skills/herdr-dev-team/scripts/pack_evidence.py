@@ -242,17 +242,21 @@ def mutation_proof(project, commit, mutation, pinned, green, red, patch, *, exam
 
 def validate(project: Path, branch: str, input_commit: str, role: str, status: str,
              payload: dict, store: Path, checks: dict, *, pack="two", spec_path=None,
-             qa_script_snapshot=None, qa_repair_commit=None) -> None:
+             qa_script_snapshot=None, qa_repair_commit=None, qa_command=None,
+             quality_failure=None) -> None:
     """Validate a receipt and add durable snapshot locations to its evidence records."""
     statuses = {"four": FOUR_STATUSES, "six": SIX_STATUSES}.get(pack, STATUSES)
     if role not in statuses or status not in statuses[role]:
         raise ValueError(f"invalid {role} receipt status {status}")
-    role_checks = validate_checks(checks, pack=pack)
-    pinned = role_checks[role]
+    if qa_command is None:
+        role_checks = validate_checks(checks, pack=pack)
+        pinned = role_checks[role]
+    else:
+        pinned = {"user-entry": {"command": qa_command, "exit_code": 0}} if role == "qa" else {}
     if pack == "six" and role == "qa":
         if qa_repair_commit is not None and status == "repair":
             raise ValueError("QA is already assigned a local repair. Use fail to return a remaining defect to Coder.")
-        if status == "repair" or qa_repair_commit is not None:
+        if qa_command is None and (status == "repair" or qa_repair_commit is not None):
             repair_checks = qa_repair_checks(role_checks)
             if qa_repair_commit is not None:
                 pinned = {**pinned, **repair_checks}
@@ -320,7 +324,8 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
             if reported[name]["exit_code"] != check["exit_code"]:
                 raise ValueError(f"check {name} must exit with code {check['exit_code']}")
     else:
-        validate_failure(status, payload.get("failure"), pinned, reported, pack=pack)
+        validate_failure(status, payload.get("failure"), pinned, reported, pack=pack,
+                         quality_failure=quality_failure)
 
     mutation_checks = [("mutation", "unit")]
     if pack == "four" and role == "architect":
@@ -354,7 +359,8 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
                 raise ValueError("QA receipt must use the assigned input commit")
             if not isinstance(qa, dict):
                 raise ValueError("QA receipt requires a script and observations")
-            if status in QA_FINDINGS and qa_repair_commit is None and payload["failure"]["check"] != "user-entry":
+            if (status in QA_FINDINGS and qa_repair_commit is None and quality_failure is None
+                    and payload["failure"]["check"] != "user-entry"):
                 raise ValueError("QA failure must reference the user-entry check")
             if "user-entry" not in reported:
                 raise ValueError("QA receipt requires the user-entry check")
@@ -389,7 +395,7 @@ def validate(project: Path, branch: str, input_commit: str, role: str, status: s
         record[key] = snapshot
 
 
-def validate_failure(status, failure, pinned, reported, *, pack="two"):
+def validate_failure(status, failure, pinned, reported, *, pack="two", quality_failure=None):
     if not isinstance(failure, dict):
         raise ValueError(f"{status} receipt requires failure details")
     if status in {"blocked", "paused", "superseded"}:
@@ -398,6 +404,8 @@ def validate_failure(status, failure, pinned, reported, *, pack="two"):
     name = required_text(failure, "check", "failure")
     for key in ("input", "expected", "actual"):
         required_text(failure, key, "failure")
+    if status == "fail" and name == quality_failure:
+        return
     if (name not in reported or (pack == "two" and name == "mutation")
             or reported[name]["exit_code"] == pinned[name]["exit_code"]):
         raise ValueError("failure must reference a pinned check with an unexpected exit code")
