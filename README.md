@@ -4,7 +4,7 @@ An Agent Skill for delivering changes through a team of local Herdr agents. Choo
 
 | Pack | When to use it | Who signs off |
 | --- | --- | --- |
-| [Two-pack](skills/herdr-dev-team/references/handoffs.md#run-a-two-pack) | The behavior is clear. A Coder implements it and a Cleaner independently checks the code and tests. | Cleaner |
+| [Two-pack](skills/herdr-dev-team/references/two-pack.md) | The behavior is clear. A Coder implements it and a Cleaner independently checks the code and tests. | Cleaner |
 | [Four-pack](skills/herdr-dev-team/references/four-pack.md) | You want to approve executable behavior examples before coding. A Refactorer and an Architect check the implementation. | Architect |
 | [Six-pack](skills/herdr-dev-team/references/six-pack.md) | You also need proof that the user's actual workflow works. After implementation, cleanup, architecture checks and test hardening, QA runs the approved steps through the user entry point. | Independent QA |
 
@@ -49,6 +49,8 @@ dskills status --project .
 
 If the old skill is only in the pool, skip `unplug`. Follow the initialization step above if the project is new to dskills. Refresh or restart the Leader session, then start a new six-pack run to load the updated role instructions.
 
+When moving from `v0.4.0` to this checkout, finish any Coder/Reviewer run with the `v0.4.0` helper and keep its `state.json` as an archive. Start new work with a pack. Existing SQLite pack runs can continue with the current helper.
+
 ## Use it
 
 Run the Leader in a live Herdr terminal that accepts incoming messages. The team needs a shared local filesystem, Git, Python 3.8 or later on a POSIX host, and access to `hc`. For the documented Pi worker setup, install Pi and configure the models the workers will use.
@@ -61,7 +63,7 @@ For four-pack and six-pack, the Specifier submits the examples for your approval
 
 Six-pack also accepts a project quality plan with `--plan FILE`. Projects choose their tools, define the criteria for each role and select the checks QA must verify on the final commit. Try the Rust historical-file reader from the repository root with `python3 -B tests/try_quality_reader.py`. [Quality plan setup and recovery](skills/herdr-dev-team/references/six-pack.md#use-a-project-quality-plan)
 
-The [legacy Coder/Reviewer workflow](skills/herdr-dev-team/references/handoffs.md#prepare-a-legacy-statejson-run) is also available. Its default Pi setup uses `gpt-6.2-sol` at medium thinking for the Coder and high for the Reviewer. The Coder uses Ponytail full, and the Leader handles final QA with up to five review rounds. Visible mode keeps the Leader's focus and opens a separate `Development` tab with the Coder on the left and Reviewer on the right. Background mode uses Herdr Core. See the [role setup](skills/herdr-dev-team/references/roles.md) and [layout instructions](skills/herdr-dev-team/references/handoffs.md#launch-the-workers).
+Use the [worker launch instructions](skills/herdr-dev-team/references/handoffs.md#launch-the-workers) to put the pack in a separate Herdr App tab or launch it in the background.
 
 ## Regression tests
 
